@@ -483,7 +483,10 @@ input:focus, select:focus, textarea:focus {
 }
 
 .logs-body {
-    max-height: 200px;
+    height: 360px;
+    min-height: 120px;
+    max-height: 80vh;
+    resize: vertical; /* drag the corner for more lines */
     overflow-y: auto;
     background: #05070c;
     border-radius: 6px;
@@ -498,6 +501,27 @@ input:focus, select:focus, textarea:focus {
     margin: 0;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
+}
+
+/* One element per line so wrapped lines stay visibly one entry */
+.log-line {
+    padding: 1px 0 1px 6px;
+    border-left: 2px solid transparent;
+}
+
+/* ConnectHub's own messages, distinct from the client's output */
+.log-connecthub {
+    color: var(--text-main);
+    border-left-color: var(--accent);
+}
+
+.log-warn {
+    color: var(--warning);
+}
+
+.log-error {
+    color: var(--danger);
+    border-left-color: var(--danger);
 }
 
 /* Stream View & Floating Toolbar */
