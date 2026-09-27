@@ -178,15 +178,103 @@ def test_parse_networks_skips_invalid_entries(auth):
     assert len(auth._parse_networks("10.0.0.0/8, nonsense, 192.168.1.0/24")) == 2
 
 
-def test_check_basic_credentials(auth, monkeypatch):
-    monkeypatch.setattr(auth, "BASIC_AUTH_USER", "admin")
-    monkeypatch.setattr(auth, "BASIC_AUTH_PASSWORD", "hunter2")
-    assert auth.check_basic_credentials("admin", "hunter2")
-    assert not auth.check_basic_credentials("admin", "wrong")
-    assert not auth.check_basic_credentials("root", "hunter2")
+# ----------------- User accounts -----------------
+
+def test_password_hash_round_trips(auth):
+    stored = auth.hash_password("correct horse")
+    assert stored.startswith("scrypt$")
+    assert auth.verify_password_hash("correct horse", stored)
+    assert not auth.verify_password_hash("wrong horse", stored)
 
 
-def test_empty_configured_password_rejects_everything(auth, monkeypatch):
-    """AUTH_MODE=basic with no password set must not authenticate a blank password."""
-    monkeypatch.setattr(auth, "BASIC_AUTH_PASSWORD", "")
+def test_same_password_gets_a_new_salt(auth):
+    assert auth.hash_password("same") != auth.hash_password("same")
+
+
+@pytest.mark.parametrize("stored", ["", "plain", "md5$1$2$3$4$5", "scrypt$x$8$1$AAAA$AAAA", "scrypt$16384$8$1$!!$!!"])
+def test_malformed_hash_never_verifies(auth, stored):
+    assert not auth.verify_password_hash("anything", stored)
+
+
+def test_fresh_install_has_no_account(auth):
+    """No default account: nothing can log in until the first one is created."""
+    assert auth.setup_required()
+    assert auth.signups_open()
     assert not auth.check_basic_credentials("admin", "")
+    assert not auth.check_basic_credentials("admin", "admin")
+
+
+def test_create_user_then_log_in(auth):
+    auth.create_user("alice", "alice-password")
+    assert not auth.setup_required()
+    assert auth.check_basic_credentials("alice", "alice-password")
+    assert not auth.check_basic_credentials("alice", "wrong-password")
+    assert not auth.check_basic_credentials("bob", "alice-password")
+
+
+def test_usernames_are_unique_ignoring_case(auth):
+    auth.create_user("alice", "alice-password")
+    with pytest.raises(ValueError):
+        auth.create_user("Alice", "other-password")
+
+
+def test_first_account_is_allowed_even_with_signups_disabled(auth, monkeypatch):
+    monkeypatch.setattr(auth, "ALLOW_SIGNUPS", False)
+    assert auth.signups_open()
+    auth.create_user("alice", "alice-password")
+    assert not auth.signups_open()
+    with pytest.raises(PermissionError):
+        auth.create_user("bob", "bob-password")
+
+
+def test_signups_stay_open_when_allowed(auth):
+    auth.create_user("alice", "alice-password")
+    auth.create_user("bob", "bob-password")
+    assert auth.check_basic_credentials("bob", "bob-password")
+
+
+def test_accounts_survive_a_restart(tmp_path):
+    first = fresh_auth(tmp_path)
+    first.create_user("alice", "alice-password")
+    second = fresh_auth(tmp_path)
+    assert second.check_basic_credentials("alice", "alice-password")
+    assert second.user_epoch("alice") == first.user_epoch("alice")
+
+
+def test_users_file_is_private(auth, tmp_path):
+    if os.name == "nt":
+        pytest.skip("POSIX permissions")
+    auth.create_user("alice", "alice-password")
+    assert (tmp_path / "users.json").stat().st_mode & 0o777 == 0o600
+    assert not (tmp_path / "users.json.tmp").exists()
+
+
+def test_password_is_not_stored_in_plain_text(auth, tmp_path):
+    auth.create_user("alice", "alice-password")
+    assert "alice-password" not in (tmp_path / "users.json").read_text()
+
+
+def test_damaged_users_file_fails_closed(tmp_path):
+    """A corrupt file must not look like a fresh install that anyone can claim."""
+    (tmp_path / "users.json").write_text("{not json")
+    auth = fresh_auth(tmp_path)
+    assert not auth.setup_required()
+    assert not auth.signups_open()
+    with pytest.raises(PermissionError):
+        auth.create_user("mallory", "mallory-password")
+
+
+def test_password_change_rotates_only_that_users_epoch(auth):
+    auth.create_user("alice", "alice-password")
+    auth.create_user("bob", "bob-password")
+    alice, bob = auth.user_epoch("alice"), auth.user_epoch("bob")
+    auth.set_user_password("alice", "alice-password-2")
+    assert auth.user_epoch("alice") != alice
+    assert auth.user_epoch("bob") == bob
+    assert auth.check_basic_credentials("alice", "alice-password-2")
+    assert not auth.check_basic_credentials("alice", "alice-password")
+
+
+def test_changing_an_unknown_users_password_fails(auth):
+    with pytest.raises(KeyError):
+        auth.set_user_password("ghost", "ghost-password")

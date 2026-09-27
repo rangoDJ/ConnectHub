@@ -36,6 +36,8 @@
             </button>
             <div id="user-profile" class="user-profile hidden">
                 <span id="user-display-name" class="user-display-name">user</span>
+                <!-- Only shown with AUTH_MODE=basic; SSO passwords are managed by the provider -->
+                <button id="btn-open-password" class="btn btn-sm btn-ghost hidden">Password</button>
                 <a href="/auth/logout" class="btn btn-sm btn-outline">Logout</a>
             </div>
             <!-- Only shown in the stream view -->
@@ -340,6 +342,39 @@
                 <button id="btn-clip-clear" class="btn btn-ghost">Clear</button>
             </div>
             <div id="clip-status" class="alert-box alert-success hidden"></div>
+        </div>
+    </div>
+
+    <!-- Change Password Drawer -->
+    <div id="password-drawer" class="drawer">
+        <div class="drawer-header">
+            <div>
+                <h3>🔑 Change Password</h3>
+                <p class="drawer-subtitle">Other sessions are signed out after a change</p>
+            </div>
+            <button id="btn-close-password" class="btn-close">&times;</button>
+        </div>
+        <div class="drawer-body">
+            <form id="password-form">
+                <!-- Lets password managers match the saved login -->
+                <input type="text" id="password-username" autocomplete="username" class="hidden" readonly>
+                <div class="form-group">
+                    <label for="current-password">Current password</label>
+                    <input type="password" id="current-password" autocomplete="current-password" required>
+                </div>
+                <div class="form-group">
+                    <label for="new-password">New password</label>
+                    <input type="password" id="new-password" autocomplete="new-password" minlength="8" required>
+                </div>
+                <div class="form-group">
+                    <label for="confirm-password">Confirm new password</label>
+                    <input type="password" id="confirm-password" autocomplete="new-password" minlength="8" required>
+                </div>
+                <div class="form-actions">
+                    <button type="submit" id="btn-password-save" class="btn btn-primary">Change Password</button>
+                </div>
+            </form>
+            <div id="password-status" class="alert-box hidden"></div>
         </div>
     </div>
 

@@ -1,6 +1,8 @@
 import os
+import json
 import time
 import base64
+import hashlib
 import secrets
 import logging
 import ipaddress
@@ -21,8 +23,8 @@ def _env_bool(name: str, default: bool) -> bool:
 
 # Authentication configuration from environment
 AUTH_MODE = os.environ.get("AUTH_MODE", "none").lower() # none, basic, oidc, forward_auth
-BASIC_AUTH_USER = os.environ.get("BASIC_AUTH_USER", "admin")
-BASIC_AUTH_PASSWORD = os.environ.get("BASIC_AUTH_PASSWORD", "")
+# Basic auth: set false to stop new accounts being created from the login page
+ALLOW_SIGNUPS = _env_bool("ALLOW_SIGNUPS", True)
 
 # OIDC / Authentik configuration
 OIDC_ISSUER_URL = os.environ.get("OIDC_ISSUER_URL", "").rstrip("/")
@@ -96,8 +98,6 @@ def _parse_networks(raw: str) -> List[ipaddress._BaseNetwork]:
 TRUSTED_PROXY_NETS = _parse_networks(FORWARD_AUTH_TRUSTED_PROXIES)
 
 # Startup configuration sanity checks
-if AUTH_MODE == "basic" and not BASIC_AUTH_PASSWORD:
-    logger.error("AUTH_MODE=basic but BASIC_AUTH_PASSWORD is empty; all logins will be rejected")
 if AUTH_MODE == "forward_auth" and not TRUSTED_PROXY_NETS:
     logger.error("AUTH_MODE=forward_auth but FORWARD_AUTH_TRUSTED_PROXIES is empty; all requests will be rejected")
 if AUTH_MODE == "oidc" and not OIDC_VERIFY_SSL:
@@ -114,12 +114,121 @@ def _is_trusted_proxy(ip: str) -> bool:
         return False
     return any(addr in net for net in TRUSTED_PROXY_NETS)
 
-def check_basic_credentials(username: str, password: str) -> bool:
-    if not BASIC_AUTH_PASSWORD:
+# ----------------- User accounts -----------------
+
+# Basic auth accounts, created from the WebUI. There is no default account: on a fresh
+# install the first visitor to the login page creates one. To recover a forgotten
+# password, delete that user's entry (or the whole file) and restart.
+USERS_FILE = CONFIG_DIR / "users.json"
+USERNAME_PATTERN = r"^[A-Za-z0-9._-]{1,64}$"
+PASSWORD_MIN_LENGTH = 8
+PASSWORD_MAX_LENGTH = 1024
+_SCRYPT_N, _SCRYPT_R, _SCRYPT_P = 2 ** 14, 8, 1
+_users_lock = threading.Lock()
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    digest = hashlib.scrypt(password.encode("utf-8"), salt=salt,
+                            n=_SCRYPT_N, r=_SCRYPT_R, p=_SCRYPT_P, dklen=32)
+    b64 = lambda b: base64.b64encode(b).decode("ascii")
+    return f"scrypt${_SCRYPT_N}${_SCRYPT_R}${_SCRYPT_P}${b64(salt)}${b64(digest)}"
+
+def verify_password_hash(password: str, stored: str) -> bool:
+    try:
+        scheme, n, r, p, salt, digest = stored.split("$")
+        if scheme != "scrypt":
+            return False
+        expected = base64.b64decode(digest)
+        actual = hashlib.scrypt(password.encode("utf-8"), salt=base64.b64decode(salt),
+                                n=int(n), r=int(r), p=int(p), dklen=len(expected))
+    except (ValueError, TypeError):
         return False
-    user_ok = secrets.compare_digest(username.encode("utf-8"), BASIC_AUTH_USER.encode("utf-8"))
-    pass_ok = secrets.compare_digest(password.encode("utf-8"), BASIC_AUTH_PASSWORD.encode("utf-8"))
-    return user_ok and pass_ok
+    return secrets.compare_digest(actual, expected)
+
+# Checked when the username doesn't exist, so an unknown user costs the same time as a
+# wrong password and response timing doesn't reveal which usernames exist
+_DUMMY_HASH = hash_password(secrets.token_hex(16))
+
+def _load_users() -> Optional[Dict[str, Dict[str, str]]]:
+    """{} when no account exists yet. None when the file is damaged: logins are then
+    rejected and sign-up stays closed, so nobody can claim it as a fresh install."""
+    try:
+        users = json.loads(USERS_FILE.read_text()).get("users")
+        if isinstance(users, dict) and all(
+            isinstance(u, dict) and isinstance(u.get("hash"), str) and isinstance(u.get("epoch"), str)
+            for u in users.values()
+        ):
+            return users
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError, AttributeError):
+        pass
+    logger.error("%s is unreadable; all logins are rejected until it is fixed or deleted", USERS_FILE)
+    return None
+
+def _save_users(users: Dict[str, Dict[str, str]]):
+    """Caller must hold _users_lock."""
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    # Same pattern as the session secret: private temp file, then atomic replace
+    tmp = USERS_FILE.with_name(USERS_FILE.name + ".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump({"users": users}, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, USERS_FILE)
+
+_users = _load_users()
+
+if AUTH_MODE == "basic" and _users == {}:
+    logger.warning("No accounts exist yet; the first visitor to the login page will create one")
+
+def setup_required() -> bool:
+    """True on a fresh install, before the first account exists."""
+    return _users == {}
+
+def signups_open() -> bool:
+    # The first account can always be created, even with ALLOW_SIGNUPS=false,
+    # otherwise nobody could ever log in
+    return _users is not None and (not _users or ALLOW_SIGNUPS)
+
+def user_epoch(username: str) -> Optional[str]:
+    """Changes whenever the user's password does. Session cookies carry it, so a
+    password change ends that user's older sessions. None for an unknown user."""
+    user = (_users or {}).get(username)
+    return user["epoch"] if user else None
+
+def _new_record(password: str) -> Dict[str, str]:
+    return {"hash": hash_password(password), "epoch": secrets.token_hex(8)}
+
+def create_user(username: str, password: str):
+    """Raises PermissionError when sign-up is closed, ValueError when the name is taken."""
+    global _users
+    record = _new_record(password)
+    with _users_lock:
+        # Re-checked under the lock so two visitors can't both claim a fresh install
+        if not signups_open():
+            raise PermissionError("Sign-ups are disabled")
+        if any(name.casefold() == username.casefold() for name in _users):
+            raise ValueError("That username is already taken")
+        users = {**_users, username: record}
+        _save_users(users)
+        _users = users
+
+def set_user_password(username: str, new_password: str):
+    global _users
+    record = _new_record(new_password)
+    with _users_lock:
+        if not _users or username not in _users:
+            raise KeyError(username)
+        users = {**_users, username: record}
+        _save_users(users)
+        _users = users
+
+def check_basic_credentials(username: str, password: str) -> bool:
+    user = (_users or {}).get(username)
+    ok = verify_password_hash(password, user["hash"] if user else _DUMMY_HASH)
+    return user is not None and ok
 
 # ----------------- Login rate limiting -----------------
 
@@ -218,6 +327,8 @@ def _cookie_secure(request: Optional[Request]) -> bool:
     return proto.split(",")[0].strip().lower() == "https"
 
 def create_session_cookie(response: Response, user_data: dict, request: Optional[Request] = None):
+    if user_data.get("auth_mode") == "basic":
+        user_data = {**user_data, "pwv": user_epoch(user_data.get("username", ""))}
     token = serializer.dumps(user_data)
     response.set_cookie(
         key=COOKIE_NAME,
@@ -282,7 +393,11 @@ def get_current_user(request: Request) -> Dict[str, Any]:
     if cookie_token:
         try:
             data = serializer.loads(cookie_token, max_age=MAX_AGE)
-            if data.get("auth_mode") == AUTH_MODE:
+            # Basic auth sessions end when the user's password changes or the account
+            # is removed from users.json
+            epoch = user_epoch(data.get("username", ""))
+            stale = AUTH_MODE == "basic" and (epoch is None or data.get("pwv") != epoch)
+            if data.get("auth_mode") == AUTH_MODE and not stale:
                 return {
                     "authenticated": True,
                     "username": data.get("username", "user"),

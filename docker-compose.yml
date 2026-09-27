@@ -30,9 +30,9 @@ services:
       # Options: none, basic, oidc, forward_auth
       - AUTH_MODE=${AUTH_MODE:-none}
 
-      # Basic Auth settings (used when AUTH_MODE=basic). Logins are rejected until a password is set.
-      - BASIC_AUTH_USER=${BASIC_AUTH_USER:-admin}
-      - BASIC_AUTH_PASSWORD=${BASIC_AUTH_PASSWORD:-}
+      # Basic Auth (AUTH_MODE=basic): no default account; the first visitor creates one in the WebUI.
+      # Set to false once your accounts exist to stop new sign-ups.
+      - ALLOW_SIGNUPS=${ALLOW_SIGNUPS:-true}
 
       # Authentik / OIDC SSO settings (used when AUTH_MODE=oidc)
       - OIDC_ISSUER_URL=${OIDC_ISSUER_URL:-}
