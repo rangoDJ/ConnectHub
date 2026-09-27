@@ -52,11 +52,22 @@ def get_or_create_secret_key() -> str:
         return env_secret
     try:
         if SECRET_KEY_FILE.exists():
-            return SECRET_KEY_FILE.read_text().strip()
+            # A truncated file (crash or full disk mid-write) must not become an empty
+            # signing key, which would let anyone forge a session cookie
+            existing = SECRET_KEY_FILE.read_text().strip()
+            if existing:
+                return existing
+            logger.warning("Session secret file is empty; generating a new key")
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         new_secret = secrets.token_hex(32)
-        SECRET_KEY_FILE.write_text(new_secret)
-        SECRET_KEY_FILE.chmod(0o600)
+        # Write via a private temp file so the real path is never briefly empty
+        tmp = SECRET_KEY_FILE.with_name(SECRET_KEY_FILE.name + ".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(new_secret)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, SECRET_KEY_FILE)
         return new_secret
     except Exception as e:
         logger.warning("Could not persist session secret (%s); sessions will reset on restart", e)
@@ -114,8 +125,26 @@ def check_basic_credentials(username: str, password: str) -> bool:
 
 LOGIN_MAX_FAILURES = 10
 LOGIN_WINDOW_SECONDS = 15 * 60
+# How often to drop entries for IPs that stopped failing. Without this, only the IP
+# being looked up is ever pruned, so a spray from many sources grows the dict forever.
+LOGIN_SWEEP_SECONDS = 60
 _failed_logins: Dict[str, List[float]] = {}
 _failed_lock = threading.Lock()
+_last_sweep = 0.0
+
+def _sweep_expired(now: float):
+    """Drop every IP whose failures have all aged out. Caller must hold _failed_lock."""
+    global _last_sweep
+    # A backwards clock jump (NTP) makes the delta negative and forces a sweep,
+    # rather than blocking sweeps until the wall clock catches up again
+    if 0 <= now - _last_sweep < LOGIN_SWEEP_SECONDS:
+        return
+    _last_sweep = now
+    # Attempts are appended in order, so the last one is the most recent
+    stale = [ip for ip, attempts in _failed_logins.items()
+             if not attempts or now - attempts[-1] >= LOGIN_WINDOW_SECONDS]
+    for ip in stale:
+        del _failed_logins[ip]
 
 def _recent_failures(ip: str, now: float) -> List[float]:
     attempts = [t for t in _failed_logins.get(ip, []) if now - t < LOGIN_WINDOW_SECONDS]
@@ -136,6 +165,8 @@ def check_login_rate_limit(ip: str):
 def record_login_failure(ip: str):
     with _failed_lock:
         now = time.time()
+        # Only this path adds keys, so it is the one that has to bound the dict
+        _sweep_expired(now)
         _recent_failures(ip, now)
         _failed_logins.setdefault(ip, []).append(now)
 
