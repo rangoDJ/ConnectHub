@@ -1,0 +1,4 @@
+# Test dependencies. Install alongside root/app/backend/requirements.txt:
+#   pip install -r root/app/backend/requirements.txt -r requirements-dev.txt
+#   pytest
+pytest>=8.0.0
