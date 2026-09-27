@@ -77,7 +77,20 @@ Every change follows the same path:
 2. **Open one pull request for that issue.** Each PR fixes exactly one issue, and each issue is fixed by one PR. Reference it in the PR description with `Fixes #N`.
 3. **Found something else along the way?** Don't fold it into the current PR. Open a new issue for it, then a separate PR. If the new fix depends on an open PR, base it on that PR's branch and say which to merge first.
 4. **Test before merging.** A PR is merged only once it has been tested (see [Making Changes](#making-changes)).
-5. **Merge, then close the issue.** `Fixes #N` closes the issue automatically when the PR lands on `main`. If it was merged into another branch instead, close the issue by hand with a link to the PR.
+5. **Merge.** Every merge into `main` is released automatically as a new version (see [Versioning](#versioning)).
+6. **Close the issue.** `Fixes #N` closes the issue automatically when the PR lands on `main`. If it was merged into another branch instead, close the issue by hand with a link to the PR.
+
+### Versioning
+
+ConnectHub follows semantic versioning, and CI picks the next version for every PR merged into `main`, counting up from the latest `vX.Y.Z` tag:
+
+| Merged PR | Bump | Example |
+|---|---|---|
+| Has the `release:major` label (breaking change) | major | 1.4.2 → 2.0.0 |
+| Has the `release:minor` label, or its branch starts with `feature/` | minor | 1.4.2 → 1.5.0 |
+| Anything else: fixes, docs, CI | patch | 1.4.2 → 1.4.3 |
+
+The image built for the merge is published as `latest`, `X.Y.Z` and `X.Y`, and a `vX.Y.Z` tag and GitHub release are created with generated notes. Name branches accordingly (`feature/…` for new functionality, `fix/…`, `docs/…` or `ci/…` otherwise), and add `release:major` to any PR that breaks existing deployments, such as removed settings or changed volumes.
 
 ---
 
