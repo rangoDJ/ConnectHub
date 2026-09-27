@@ -17,6 +17,8 @@ env:
 
 jobs:
   build:
+    # Version tags reuse the image main already built (see promote)
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -53,8 +55,6 @@ jobs:
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha,prefix=sha-
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
             type=ref,event=pr
           labels: |
             org.opencontainers.image.title=ConnectHub
@@ -71,11 +71,50 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # Runs only for vX.Y.Z tags, after the versioned image is published, so a
-  # release never points at an image that failed to build
-  release:
-    needs: build
+  # For vX.Y.Z tags: add version tags to the image main already built for this
+  # commit instead of rebuilding it, so the release ships exactly that image
+  promote:
     if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Tag the existing image with the version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          image="${REGISTRY}/${GITHUB_REPOSITORY,,}"
+          source="${image}:sha-${GITHUB_SHA::7}"
+          version="${TAG#v}"
+
+          if ! docker buildx imagetools inspect "$source" > /dev/null 2>&1; then
+            echo "::error::No image for this commit ($source). Push the commit to main, wait for its build to finish, then push the tag."
+            exit 1
+          fi
+
+          tags=(-t "${image}:${version}")
+          # Pre-releases (v1.2.0-rc.1) don't move the X.Y tag
+          if [[ "$version" != *-* ]]; then
+            tags+=(-t "${image}:${version%.*}")
+          fi
+          docker buildx imagetools create "${tags[@]}" "$source"
+
+  # Runs only after the versioned image is published, so a release never
+  # points at an image that doesn't exist
+  release:
+    needs: promote
     runs-on: ubuntu-latest
     permissions:
       contents: write
