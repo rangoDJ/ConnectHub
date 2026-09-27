@@ -404,13 +404,7 @@ async function pollStatus() {
 
         // Update logs
         if (data.recent_logs && data.recent_logs.length > 0) {
-            const text = data.recent_logs.join("\n");
-            if (logsContent.textContent !== text) {
-                // Follow new lines unless the user has scrolled up to read older ones
-                const atBottom = logsBody.scrollHeight - logsBody.scrollTop - logsBody.clientHeight < 24;
-                logsContent.textContent = text;
-                if (atBottom) logsBody.scrollTop = logsBody.scrollHeight;
-            }
+            renderLogs(data.recent_logs);
         }
 
         // Show/hide view toggle button based on whether connected
@@ -428,6 +422,39 @@ async function pollStatus() {
     } catch (e) {
         // Silent poll fail
     }
+}
+
+// ----------------- Connection Logs panel -----------------
+
+let renderedLogs = [];
+
+function logLineClass(line) {
+    const classes = ["log-line"];
+    if (line.includes("[connecthub]")) classes.push("log-connecthub");
+    if (/\[(ERROR|FATAL)\]/.test(line)) classes.push("log-error");
+    else if (/\[WARN(ING)?\]/.test(line)) classes.push("log-warn");
+    return classes.join(" ");
+}
+
+function renderLogs(lines) {
+    if (lines.length === renderedLogs.length && lines.every((l, i) => l === renderedLogs[i])) return;
+    // The server clears the log on every connect, so a different first line means a new session
+    const newSession = lines[0] !== renderedLogs[0];
+    // Follow new lines only once the user has scrolled to the bottom of an overflowing log;
+    // jumping there as soon as it fills would hide the session's first lines
+    const overflowing = logsBody.scrollHeight > logsBody.clientHeight;
+    const atBottom = overflowing && logsBody.scrollHeight - logsBody.scrollTop - logsBody.clientHeight < 24;
+
+    logsContent.replaceChildren(...lines.map(line => {
+        const el = document.createElement("div");
+        el.className = logLineClass(line);
+        el.textContent = line;
+        return el;
+    }));
+    renderedLogs = lines;
+
+    if (newSession) logsBody.scrollTop = 0;
+    else if (atBottom) logsBody.scrollTop = logsBody.scrollHeight;
 }
 
 function updateStatusBadge(status, target, protocol) {
