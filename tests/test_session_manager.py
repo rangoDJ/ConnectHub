@@ -17,6 +17,7 @@ def mgr(monkeypatch):
     manager.start_time = None
     manager.lock = sm.threading.Lock()
     manager._user_disconnected = set()
+    manager._pending_connect = None
     manager.rdp_binary = "xfreerdp"
     manager.supports_args_from = True
     return manager
@@ -227,3 +228,90 @@ def test_watchdog_leaves_a_superseded_session_alone(mgr, monkeypatch):
     mgr.status = "connecting"
     mgr._watch_connected(proc, sm.Launch(cmd=[], target="h:1"))
     assert mgr.status == "connecting"
+
+
+# ----------------- Waiting for the display to settle -----------------
+
+@pytest.fixture
+def clock(monkeypatch):
+    """Fake time: sleep advances the clock instead of waiting."""
+    now = [1000.0]
+    monkeypatch.setattr(sm.time, "time", lambda: now[0])
+    monkeypatch.setattr(sm.time, "sleep", lambda s: now.__setitem__(0, now[0] + s))
+    monkeypatch.setattr(sm.shutil, "which", lambda name: "/usr/bin/xdotool")
+    return now
+
+
+def sizes_over_time(clock, timeline):
+    """_display_size stand-in returning the last size whose start time has passed."""
+    start = clock[0]
+    def size():
+        current = None
+        for at, value in timeline:
+            if clock[0] - start >= at:
+                current = value
+        return current
+    return size
+
+
+def test_waits_for_the_stream_to_resize_the_display(mgr, monkeypatch, clock):
+    """The regression: the session must not start until Selkies has resized the display."""
+    start = clock[0]
+    monkeypatch.setattr(mgr, "_display_size", sizes_over_time(clock, [(0, (1024, 768)), (0.9, (2880, 1472))]))
+    mgr._wait_for_display_to_settle()
+    waited = clock[0] - start
+    assert waited >= 0.9 + sm.DISPLAY_SETTLE_SECONDS
+    assert waited < sm.DISPLAY_SETTLE_MAX_SECONDS
+
+
+def test_already_sized_display_only_waits_the_settle_time(mgr, monkeypatch, clock):
+    start = clock[0]
+    monkeypatch.setattr(mgr, "_display_size", lambda: (2880, 1472))
+    mgr._wait_for_display_to_settle()
+    assert clock[0] - start == pytest.approx(sm.DISPLAY_SETTLE_SECONDS, abs=sm.DISPLAY_POLL_SECONDS)
+
+
+def test_a_display_that_keeps_changing_is_capped(mgr, monkeypatch, clock):
+    start = clock[0]
+    counter = [0]
+    def changing():
+        counter[0] += 1
+        return (1000 + counter[0], 800)
+    monkeypatch.setattr(mgr, "_display_size", changing)
+    mgr._wait_for_display_to_settle()
+    assert clock[0] - start == pytest.approx(sm.DISPLAY_SETTLE_MAX_SECONDS, abs=sm.DISPLAY_POLL_SECONDS)
+
+
+def test_no_wait_without_xdotool(mgr, monkeypatch):
+    monkeypatch.setattr(sm.shutil, "which", lambda name: None)
+    monkeypatch.setattr(mgr, "_display_size", lambda: pytest.fail("polled without xdotool"))
+    mgr._wait_for_display_to_settle()
+
+
+def test_status_is_connecting_while_waiting(mgr, monkeypatch):
+    """The dashboard unloads the stream on 'disconnected', and the stream sizes the display."""
+    seen = []
+    monkeypatch.setattr(mgr, "_wait_for_display_to_settle", lambda: seen.append(mgr.status))
+    monkeypatch.setattr(sm.subprocess, "Popen", lambda *a, **k: (_ for _ in ()).throw(OSError("no client")))
+    mgr.connect({"protocol": "vnc", "host": "10.0.0.5"})
+    assert seen == ["connecting"]
+
+
+def test_disconnect_while_waiting_cancels_the_launch(mgr, monkeypatch):
+    launched = []
+    monkeypatch.setattr(mgr, "_wait_for_display_to_settle", lambda: mgr.disconnect())
+    monkeypatch.setattr(sm.subprocess, "Popen", lambda *a, **k: launched.append(a))
+    result = mgr.connect({"protocol": "vnc", "host": "10.0.0.5"})
+    assert not result["success"]
+    assert launched == []
+    assert mgr.status == "disconnected"
+
+
+def test_second_connect_while_one_is_starting_is_refused(mgr, monkeypatch):
+    results = []
+    monkeypatch.setattr(mgr, "_wait_for_display_to_settle",
+                        lambda: results.append(mgr.connect({"protocol": "vnc", "host": "10.0.0.6"})))
+    monkeypatch.setattr(sm.subprocess, "Popen", lambda *a, **k: (_ for _ in ()).throw(OSError("no client")))
+    mgr.connect({"protocol": "vnc", "host": "10.0.0.5"})
+    assert results and not results[0]["success"]
+    assert "already starting" in results[0]["message"]

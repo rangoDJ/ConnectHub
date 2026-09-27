@@ -1,5 +1,8 @@
 // State
 let currentStatus = "disconnected";
+// True while a connect request is open; a status poll answered before the server saw the
+// request would otherwise report "disconnected" and unload the stream we just started
+let connectInFlight = false;
 let isStreamView = false;
 let statusPollTimer = null;
 let savedProfiles = [];
@@ -325,22 +328,31 @@ async function handleConnect(profileId = null) {
     // Lets the server match Windows display scaling to this screen when the profile uses "auto"
     body.device_pixel_ratio = window.devicePixelRatio || 1;
 
+    // Load the stream before connecting: Selkies sizes the remote display when its client
+    // connects, and the server waits for that before starting the session, so the remote
+    // desktop starts at the browser's size instead of missing a resize mid-handshake
+    const wasLoaded = isStreamLoaded();
+    currentStatus = "connecting";
+    connectInFlight = true;
+    switchView(true);
+    if (wasLoaded) reloadIframe(); // rebind an already-open stream to the new session
+
+    const fail = (message) => {
+        switchView(false);
+        if (!wasLoaded) unloadStream();
+        showAlert(message, "error");
+    };
     try {
         const res = await apiFetch("/api/session/connect", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(body)
         });
-        if (res.ok) {
-            currentStatus = "connecting";
-            const wasLoaded = isStreamLoaded();
-            switchView(true); // Switch to stream view (loads the stream if it isn't yet)
-            if (wasLoaded) reloadIframe(); // rebind an already-open stream to the new session
-        } else {
-            showAlert(await errorMessage(res, "Failed to initiate RDP session"), "error");
-        }
+        if (!res.ok) fail(await errorMessage(res, "Failed to initiate RDP session"));
     } catch (e) {
-        showAlert("Network error trying to connect", "error");
+        fail("Network error trying to connect");
+    } finally {
+        connectInFlight = false;
     }
 }
 
@@ -378,6 +390,7 @@ function startStatusPolling() {
 }
 
 async function pollStatus() {
+    if (connectInFlight) return;
     try {
         const res = await apiFetch("/api/session/status");
         if (!res.ok) return;
