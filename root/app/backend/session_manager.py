@@ -6,7 +6,7 @@ import threading
 import time
 import logging
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 
 logger = logging.getLogger("session_manager")
 
@@ -25,6 +25,14 @@ RDP_ERROR_MARKERS = ("ERRCONNECT", "Authentication only, exit status", "LOGON_FA
 # and spawns an xdotool search every 0.5s for the whole session.
 WINDOW_WAIT_SECONDS = 20
 XDOTOOL_MISSING_FALLBACK_SECONDS = 3
+
+# Selkies resizes the display when the browser's stream client connects. A client started
+# before that sees the resize in the middle of its handshake, and FreeRDP drops a resize it
+# can't send yet, leaving the remote desktop stuck at its starting size. So the client is
+# only started once the display size has held steady for a moment.
+DISPLAY_SETTLE_SECONDS = 1.5
+DISPLAY_SETTLE_MAX_SECONDS = 5.0
+DISPLAY_POLL_SECONDS = 0.25
 
 # Only these named key actions may be injected into the X display, per protocol
 KEY_MAP = {
@@ -74,6 +82,22 @@ class ConfigError(Exception):
     pass
 
 
+class PanelLogHandler(logging.Handler):
+    """Copies this module's log messages into the session log shown in the dashboard's
+    Connection Logs panel, next to the client's own output."""
+
+    def __init__(self, manager: "SessionManager"):
+        super().__init__(logging.INFO)
+        self.manager = manager
+        self.setFormatter(logging.Formatter("[%(asctime)s] [%(levelname)s][connecthub] %(message)s", "%H:%M:%S"))
+
+    def emit(self, record: logging.LogRecord):
+        try:
+            self.manager._append_log(self.format(record))
+        except Exception:
+            self.handleError(record)
+
+
 class SessionManager:
     def __init__(self):
         self.process: Optional[subprocess.Popen] = None
@@ -85,9 +109,14 @@ class SessionManager:
         self.current_target: Optional[str] = None
         self.start_time: Optional[float] = None
         self.lock = threading.Lock()
+        # Separate from self.lock: messages are logged (and so appended) while self.lock is held
+        self._log_lock = threading.Lock()
         self._user_disconnected: set = set()
+        # Token of a connect() waiting for the display to settle; cleared to cancel it
+        self._pending_connect: Optional[object] = None
         self.rdp_binary = "xfreerdp"
         self.supports_args_from = False
+        logger.addHandler(PanelLogHandler(self))
         self._find_xfreerdp_binary()
 
     def _find_xfreerdp_binary(self):
@@ -114,10 +143,18 @@ class SessionManager:
         line = line.strip()
         if not line:
             return
-        with self.lock:
+        with self._log_lock:
             self.log_history.append(line)
             if len(self.log_history) > self.max_logs:
                 self.log_history.pop(0)
+
+    def _clear_log(self):
+        with self._log_lock:
+            self.log_history.clear()
+
+    def _log_snapshot(self) -> List[str]:
+        with self._log_lock:
+            return list(self.log_history)
 
     # ----------------- Command builders -----------------
 
@@ -391,33 +428,80 @@ class SessionManager:
             self.current_target = None
             self.start_time = None
 
+    def _display_size(self) -> Optional[Tuple[int, int]]:
+        try:
+            res = subprocess.run(
+                ["xdotool", "getdisplaygeometry"],
+                env=self._env(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=5
+            )
+            w, h = res.stdout.split()
+            return int(w), int(h)
+        except (FileNotFoundError, subprocess.TimeoutExpired, ValueError):
+            return None
+
+    def _wait_for_display_to_settle(self):
+        """Return once the display size hasn't changed for DISPLAY_SETTLE_SECONDS, or after
+        DISPLAY_SETTLE_MAX_SECONDS if it keeps changing (or nothing ever sizes it)."""
+        if not shutil.which("xdotool"):
+            return
+        started = time.time()
+        size = self._display_size()
+        stable_since = started
+        while time.time() - started < DISPLAY_SETTLE_MAX_SECONDS:
+            if time.time() - stable_since >= DISPLAY_SETTLE_SECONDS:
+                logger.info("Display settled at %s; starting the session", size)
+                return
+            time.sleep(DISPLAY_POLL_SECONDS)
+            current = self._display_size()
+            if current != size:
+                size, stable_since = current, time.time()
+        logger.info("Display still at %s after %ss; starting the session anyway", size, DISPLAY_SETTLE_MAX_SECONDS)
+
     def connect(self, config: Dict[str, Any]) -> Dict[str, Any]:
         protocol = config.get("protocol") or "rdp"
         builder = {"rdp": self._build_rdp, "vnc": self._build_vnc, "ssh": self._build_ssh}.get(protocol)
         if not builder:
             return {"success": False, "message": f"Unsupported protocol: {protocol}"}
 
+        config = dict(config)
+        config["port"] = config.get("port") or DEFAULT_PORTS[protocol]
         with self.lock:
             if self.process and self.process.poll() is None:
                 return {"success": False, "message": "A session is already running"}
+            if self._pending_connect is not None:
+                return {"success": False, "message": "A session is already starting"}
             if not config.get("host"):
                 return {"success": False, "message": "Host IP or hostname is required"}
+            # Report "connecting" straight away: the dashboard unloads the stream while the
+            # status says disconnected, and the stream is what sizes the display we wait on
+            attempt = object()
+            self._pending_connect = attempt
+            self._clear_log()
+            self.last_error = None
+            self.protocol = protocol
+            self.current_target = f"{config['host']}:{config['port']}"
+            self.start_time = None
+            self.status = "connecting"
 
-            config = dict(config)
-            config["port"] = config.get("port") or DEFAULT_PORTS[protocol]
+        # Outside the lock, so status polling and disconnect still work while we wait
+        self._wait_for_display_to_settle()
+
+        with self.lock:
+            if self._pending_connect is not attempt:
+                # disconnect() (or a newer connect) cancelled this attempt while it waited
+                return {"success": False, "message": "Connection cancelled"}
+            self._pending_connect = None
             try:
                 launch = builder(config)
             except ConfigError as e:
+                self.status = "disconnected"
+                self.protocol = None
+                self.current_target = None
                 return {"success": False, "message": str(e)}
 
             name = PROTOCOL_NAMES[protocol]
             logger.info(f"Starting {name} session to {launch.target}...")
-            self.log_history.clear()
-            self.last_error = None
-            self.protocol = protocol
             self.current_target = launch.target
-            self.start_time = None
-            self.status = "connecting"
 
             env = self._env()
             env.update(launch.env)
@@ -451,6 +535,7 @@ class SessionManager:
 
     def disconnect(self) -> Dict[str, Any]:
         with self.lock:
+            self._pending_connect = None  # cancels a connect still waiting on the display
             proc = self.process
             if not proc or proc.poll() is not None:
                 self.status = "disconnected"
@@ -482,7 +567,8 @@ class SessionManager:
                 "target": self.current_target,
                 "uptime_seconds": uptime,
                 "last_error": self.last_error,
-                "recent_logs": self.log_history[-20:]
+                # The whole session log (capped at max_logs), not just the tail
+                "recent_logs": self._log_snapshot()
             }
 
     def send_keys(self, key_combination: str) -> Dict[str, Any]:

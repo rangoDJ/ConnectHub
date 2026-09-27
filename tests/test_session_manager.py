@@ -16,7 +16,9 @@ def mgr(monkeypatch):
     manager.current_target = None
     manager.start_time = None
     manager.lock = sm.threading.Lock()
+    manager._log_lock = sm.threading.Lock()
     manager._user_disconnected = set()
+    manager._pending_connect = None
     manager.rdp_binary = "xfreerdp"
     manager.supports_args_from = True
     return manager
@@ -227,3 +229,148 @@ def test_watchdog_leaves_a_superseded_session_alone(mgr, monkeypatch):
     mgr.status = "connecting"
     mgr._watch_connected(proc, sm.Launch(cmd=[], target="h:1"))
     assert mgr.status == "connecting"
+
+
+# ----------------- Waiting for the display to settle -----------------
+
+@pytest.fixture
+def clock(monkeypatch):
+    """Fake time: sleep advances the clock instead of waiting."""
+    now = [1000.0]
+    monkeypatch.setattr(sm.time, "time", lambda: now[0])
+    monkeypatch.setattr(sm.time, "sleep", lambda s: now.__setitem__(0, now[0] + s))
+    monkeypatch.setattr(sm.shutil, "which", lambda name: "/usr/bin/xdotool")
+    return now
+
+
+def sizes_over_time(clock, timeline):
+    """_display_size stand-in returning the last size whose start time has passed."""
+    start = clock[0]
+    def size():
+        current = None
+        for at, value in timeline:
+            if clock[0] - start >= at:
+                current = value
+        return current
+    return size
+
+
+def test_waits_for_the_stream_to_resize_the_display(mgr, monkeypatch, clock):
+    """The regression: the session must not start until Selkies has resized the display."""
+    start = clock[0]
+    monkeypatch.setattr(mgr, "_display_size", sizes_over_time(clock, [(0, (1024, 768)), (0.9, (2880, 1472))]))
+    mgr._wait_for_display_to_settle()
+    waited = clock[0] - start
+    assert waited >= 0.9 + sm.DISPLAY_SETTLE_SECONDS
+    assert waited < sm.DISPLAY_SETTLE_MAX_SECONDS
+
+
+def test_already_sized_display_only_waits_the_settle_time(mgr, monkeypatch, clock):
+    start = clock[0]
+    monkeypatch.setattr(mgr, "_display_size", lambda: (2880, 1472))
+    mgr._wait_for_display_to_settle()
+    assert clock[0] - start == pytest.approx(sm.DISPLAY_SETTLE_SECONDS, abs=sm.DISPLAY_POLL_SECONDS)
+
+
+def test_a_display_that_keeps_changing_is_capped(mgr, monkeypatch, clock):
+    start = clock[0]
+    counter = [0]
+    def changing():
+        counter[0] += 1
+        return (1000 + counter[0], 800)
+    monkeypatch.setattr(mgr, "_display_size", changing)
+    mgr._wait_for_display_to_settle()
+    assert clock[0] - start == pytest.approx(sm.DISPLAY_SETTLE_MAX_SECONDS, abs=sm.DISPLAY_POLL_SECONDS)
+
+
+def test_no_wait_without_xdotool(mgr, monkeypatch):
+    monkeypatch.setattr(sm.shutil, "which", lambda name: None)
+    monkeypatch.setattr(mgr, "_display_size", lambda: pytest.fail("polled without xdotool"))
+    mgr._wait_for_display_to_settle()
+
+
+def test_status_is_connecting_while_waiting(mgr, monkeypatch):
+    """The dashboard unloads the stream on 'disconnected', and the stream sizes the display."""
+    seen = []
+    monkeypatch.setattr(mgr, "_wait_for_display_to_settle", lambda: seen.append(mgr.status))
+    monkeypatch.setattr(sm.subprocess, "Popen", lambda *a, **k: (_ for _ in ()).throw(OSError("no client")))
+    mgr.connect({"protocol": "vnc", "host": "10.0.0.5"})
+    assert seen == ["connecting"]
+
+
+def test_disconnect_while_waiting_cancels_the_launch(mgr, monkeypatch):
+    launched = []
+    monkeypatch.setattr(mgr, "_wait_for_display_to_settle", lambda: mgr.disconnect())
+    monkeypatch.setattr(sm.subprocess, "Popen", lambda *a, **k: launched.append(a))
+    result = mgr.connect({"protocol": "vnc", "host": "10.0.0.5"})
+    assert not result["success"]
+    assert launched == []
+    assert mgr.status == "disconnected"
+
+
+def test_second_connect_while_one_is_starting_is_refused(mgr, monkeypatch):
+    results = []
+    monkeypatch.setattr(mgr, "_wait_for_display_to_settle",
+                        lambda: results.append(mgr.connect({"protocol": "vnc", "host": "10.0.0.6"})))
+    monkeypatch.setattr(sm.subprocess, "Popen", lambda *a, **k: (_ for _ in ()).throw(OSError("no client")))
+    mgr.connect({"protocol": "vnc", "host": "10.0.0.5"})
+    assert results and not results[0]["success"]
+    assert "already starting" in results[0]["message"]
+
+
+# ----------------- Dashboard log panel -----------------
+
+@pytest.fixture
+def panel(mgr):
+    """Route session_manager's log messages into mgr's panel log for the test."""
+    handler = sm.PanelLogHandler(mgr)
+    sm.logger.addHandler(handler)
+    previous = sm.logger.level
+    sm.logger.setLevel(sm.logging.INFO)
+    yield mgr
+    sm.logger.removeHandler(handler)
+    sm.logger.setLevel(previous)
+
+
+def test_connecthub_messages_reach_the_panel(panel):
+    sm.logger.info("Display settled at (2880, 1472); starting the session")
+    assert len(panel.log_history) == 1
+    line = panel.log_history[0]
+    assert "[INFO][connecthub]" in line
+    assert "Display settled" in line
+
+
+def test_logging_while_holding_the_session_lock_does_not_deadlock(panel):
+    """connect() logs inside `with self.lock`; the panel must not need that lock."""
+    done = sm.threading.Event()
+
+    def log_under_lock():
+        with panel.lock:
+            sm.logger.warning("logged while locked")
+        done.set()
+
+    t = sm.threading.Thread(target=log_under_lock, daemon=True)
+    t.start()
+    assert done.wait(2), "deadlocked appending a log line under the session lock"
+    assert "logged while locked" in panel.log_history[-1]
+
+
+def test_connect_messages_survive_the_log_reset(panel, monkeypatch):
+    """The log is cleared at the start of each connect; its own messages come after that."""
+    panel._append_log("line from the previous session")
+    monkeypatch.setattr(panel, "_wait_for_display_to_settle", lambda: sm.logger.info("Display settled"))
+    monkeypatch.setattr(sm.subprocess, "Popen", lambda *a, **k: (_ for _ in ()).throw(OSError("no client")))
+    panel.connect({"protocol": "vnc", "host": "10.0.0.5"})
+    text = "\n".join(panel.log_history)
+    assert "previous session" not in text
+    assert "Display settled" in text
+    assert "Starting VNC session to 10.0.0.5:5900" in text
+    assert "Failed to launch VNC client" in text
+
+
+def test_status_returns_the_whole_log_not_just_the_tail(mgr):
+    for i in range(60):
+        mgr._append_log(f"line {i}")
+    logs = mgr.get_status()["recent_logs"]
+    assert len(logs) == 60
+    assert logs[0] == "line 0"
