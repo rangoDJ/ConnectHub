@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:1
-FROM ghcr.io/linuxserver/baseimage-selkies:ubuntunoble
+# ubuntunoble stopped receiving builds in June 2026; its older Selkies rejects h264enc
+FROM ghcr.io/linuxserver/baseimage-selkies:ubunturesolute
 
 LABEL maintainer="kodi"
 LABEL description="ConnectHub - WebRTC remote desktop gateway for RDP, VNC and SSH, multi-GPU encoding (NVIDIA/AMD/Intel/CPU), Authentik SSO & Basic Auth, and WebUI File Sharing."
