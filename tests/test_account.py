@@ -53,15 +53,25 @@ def test_first_signup_logs_the_user_in(app):
     assert TestClient(main.app).get("/auth/status").json()["setup_required"] is False
 
 
-def test_signup_disabled_after_the_first_account(app, monkeypatch):
-    main, auth = app
-    monkeypatch.setattr(auth, "ALLOW_SIGNUPS", False)
+@pytest.fixture
+def open_signups(app, monkeypatch):
+    monkeypatch.setattr(app[1], "ALLOW_SIGNUPS", True)
+
+
+def test_signup_disabled_after_the_first_account_by_default(app):
+    main, _ = app
     assert signup(main)[1].status_code == 200
     assert signup(main, "bob", "bob-password")[1].status_code == 403
     assert TestClient(main.app).get("/auth/status").json()["signups_open"] is False
 
 
-def test_duplicate_username_is_409(app):
+def test_second_signup_works_when_enabled(app, open_signups):
+    main, _ = app
+    signup(main)
+    assert signup(main, "bob", "bob-password")[1].status_code == 200
+
+
+def test_duplicate_username_is_409(app, open_signups):
     main, _ = app
     signup(main)
     assert signup(main, "ALICE", "other-password")[1].status_code == 409
@@ -117,7 +127,7 @@ def test_same_password_is_rejected(app):
     assert change(client, "alice-password", "alice-password").status_code == 400
 
 
-def test_change_signs_out_that_users_other_sessions_only(app):
+def test_change_signs_out_that_users_other_sessions_only(app, open_signups):
     main, _ = app
     changer, _ = signup(main)
     other_alice = login(main)
