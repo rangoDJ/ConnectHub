@@ -47,6 +47,17 @@ docker compose up -d --build
 
 The WebUI is served at `http://localhost:8080`.
 
+### Running the Tests
+The backend has a pytest suite in `tests/`. Run it from the repository root in a virtual environment:
+```bash
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install -r root/app/backend/requirements.txt -r requirements-dev.txt
+pytest
+```
+
+The tests use temporary directories for `/config` and `/shared`, so they don't need Docker or a running container. On Windows, one file-manager test that creates symlinks is skipped unless you have the privilege to create them.
+
 ### Project Layout
 | Path | What lives there |
 |---|---|
@@ -62,9 +73,10 @@ The WebUI is served at `http://localhost:8080`.
 
 1. Fork the repository and create a branch from `main` with a descriptive name, e.g. `fix/vnc-resize` or `feature/ssh-agent-forwarding`.
 2. Keep each pull request focused on a single change. Unrelated refactors are easier to review as separate PRs.
-3. Test your change in a running container against at least one real target for every protocol it affects.
-4. Update `README.md` if you add or change environment variables, ports, volumes or user-facing behaviour.
-5. Make sure `docker build .` still succeeds.
+3. Run `pytest` and add or update tests for any backend change.
+4. Test your change in a running container against at least one real target for every protocol it affects.
+5. Update `README.md` if you add or change environment variables, ports, volumes or user-facing behaviour.
+6. Make sure `docker build .` still succeeds.
 
 ### Coding Style
 - **Python**: follow PEP 8, use type hints on new functions and keep the existing module structure.
@@ -86,6 +98,6 @@ When opening a pull request:
 - Describe what changed and why, and link any related issue (e.g. `Fixes #12`).
 - Explain how you tested it (protocol, target OS, auth mode, GPU/CPU encoder).
 - Include screenshots or a short recording for UI changes.
-- Make sure the GitHub Actions image build passes.
+- Make sure `pytest` passes locally and the GitHub Actions image build succeeds.
 
 A maintainer will review your PR and may ask for changes. Once approved, it will be merged into `main`, and a new `latest` image is published automatically.
