@@ -100,7 +100,7 @@ cp .env.example .env
 ```
 
 ### 2. Launch the Container
-The image `ghcr.io/rangodj/connecthub:latest` (linux/amd64 + linux/arm64) is built by GitHub Actions on every push to `main`. Tags `sha-<commit>` and, for `vX.Y.Z` git tags, `X.Y.Z` / `X.Y` are also published.
+The image `ghcr.io/rangodj/connecthub:latest` (linux/amd64 + linux/arm64) is built by GitHub Actions on every push to `main`. Tags `sha-<commit>` and, for `vX.Y.Z` git tags, `X.Y.Z` / `X.Y` are also published, and a matching [GitHub Release](https://github.com/rangoDJ/ConnectHub/releases) is created with auto-generated notes.
 ```bash
 docker compose pull
 docker compose up -d

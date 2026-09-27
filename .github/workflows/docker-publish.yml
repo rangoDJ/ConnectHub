@@ -70,3 +70,42 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # Runs only for vX.Y.Z tags, after the versioned image is published, so a
+  # release never points at an image that failed to build
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          image="${REGISTRY}/${GITHUB_REPOSITORY,,}"
+          version="${TAG#v}"
+          # Tags like v1.2.0-rc.1 are published as pre-releases
+          prerelease=""
+          if [[ "$version" == *-* ]]; then prerelease="--prerelease"; fi
+
+          cat > notes.md <<EOF
+          ## Docker image
+
+          \`\`\`bash
+          docker pull ${image}:${version}
+          \`\`\`
+
+          Available for \`linux/amd64\` and \`linux/arm64\`.
+          EOF
+
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "ConnectHub $TAG" \
+            --notes-file notes.md \
+            --generate-notes \
+            --verify-tag \
+            $prerelease
