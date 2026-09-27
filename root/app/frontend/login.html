@@ -20,13 +20,34 @@
         <form id="basic-login-form" class="hidden">
             <div class="form-group">
                 <label for="username">Username</label>
-                <input type="text" id="username" name="username" required autocomplete="username" placeholder="admin">
+                <input type="text" id="username" name="username" required autocomplete="username">
             </div>
             <div class="form-group">
                 <label for="password">Password</label>
                 <input type="password" id="password" name="password" required autocomplete="current-password" placeholder="••••••••">
             </div>
             <button type="submit" class="btn btn-primary btn-block">Sign In</button>
+            <p id="signup-link" class="auth-switch hidden">No account? <a href="#" id="show-signup">Create one</a></p>
+        </form>
+
+        <!-- Account creation: the first account on a fresh install, or sign-up when ALLOW_SIGNUPS is on -->
+        <form id="signup-form" class="hidden">
+            <p id="setup-intro" class="sso-desc hidden">No accounts exist yet. Create the first one to get started.</p>
+            <div class="form-group">
+                <label for="signup-username">Username</label>
+                <input type="text" id="signup-username" required autocomplete="username"
+                       pattern="[A-Za-z0-9._\-]{1,64}" title="Letters, numbers, dots, dashes and underscores (up to 64)">
+            </div>
+            <div class="form-group">
+                <label for="signup-password">Password</label>
+                <input type="password" id="signup-password" required minlength="8" autocomplete="new-password">
+            </div>
+            <div class="form-group">
+                <label for="signup-confirm">Confirm password</label>
+                <input type="password" id="signup-confirm" required minlength="8" autocomplete="new-password">
+            </div>
+            <button type="submit" class="btn btn-primary btn-block">Create Account</button>
+            <p id="login-link" class="auth-switch hidden">Already have an account? <a href="#" id="show-login">Sign in</a></p>
         </form>
 
         <!-- Button for SSO / Authentik -->
@@ -48,6 +69,7 @@
         async function initLogin() {
             const spinner = document.getElementById('loading-spinner');
             const basicForm = document.getElementById('basic-login-form');
+            const signupForm = document.getElementById('signup-form');
             const oidcSection = document.getElementById('oidc-login-section');
             const alertBox = document.getElementById('alert-box');
 
@@ -69,8 +91,15 @@
                     return;
                 }
 
-                if (data.auth_mode === 'basic') {
+                if (data.auth_mode === 'basic' && data.setup_required) {
+                    document.getElementById('setup-intro').classList.remove('hidden');
+                    signupForm.classList.remove('hidden');
+                } else if (data.auth_mode === 'basic') {
                     basicForm.classList.remove('hidden');
+                    if (data.signups_open) {
+                        document.getElementById('signup-link').classList.remove('hidden');
+                        document.getElementById('login-link').classList.remove('hidden');
+                    }
                 } else if (data.auth_mode === 'oidc') {
                     oidcSection.classList.remove('hidden');
                 } else if (data.auth_mode === 'forward_auth') {
@@ -83,6 +112,49 @@
                 spinner.classList.add('hidden');
                 basicForm.classList.remove('hidden');
             }
+
+            function showError(message) {
+                alertBox.textContent = message;
+                alertBox.classList.remove('hidden');
+                alertBox.classList.add('alert-error');
+            }
+
+            function switchForm(toSignup) {
+                alertBox.classList.add('hidden');
+                signupForm.classList.toggle('hidden', !toSignup);
+                basicForm.classList.toggle('hidden', toSignup);
+            }
+            document.getElementById('show-signup').addEventListener('click', (e) => { e.preventDefault(); switchForm(true); });
+            document.getElementById('show-login').addEventListener('click', (e) => { e.preventDefault(); switchForm(false); });
+
+            signupForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                alertBox.classList.add('hidden');
+                const username = document.getElementById('signup-username').value;
+                const password = document.getElementById('signup-password').value;
+                if (password !== document.getElementById('signup-confirm').value) {
+                    showError("Passwords don't match");
+                    return;
+                }
+                try {
+                    const resp = await fetch('/auth/signup', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ username, password })
+                    });
+                    if (resp.ok) {
+                        window.location.href = '/';
+                        return;
+                    }
+                    const result = await resp.json().catch(() => ({}));
+                    const detail = Array.isArray(result.detail)
+                        ? result.detail.map(d => d.msg).join('; ')
+                        : result.detail;
+                    showError(detail || 'Could not create account');
+                } catch (err) {
+                    showError('Network error creating account');
+                }
+            });
 
             basicForm.addEventListener('submit', async (e) => {
                 e.preventDefault();

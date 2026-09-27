@@ -155,15 +155,20 @@ AUTH_MODE=none
 ```
 
 ### Mode 2: Basic Authentication (`AUTH_MODE=basic`)
-Form-based login using credentials configured in your `.env`:
+Username and password accounts, managed in the WebUI:
 ```ini
 AUTH_MODE=basic
-BASIC_AUTH_USER=admin
-BASIC_AUTH_PASSWORD=YourSecurePasswordHere!
+ALLOW_SIGNUPS=true
 ```
-There is no default password: logins are rejected until `BASIC_AUTH_PASSWORD` is set. After 10 failed attempts an IP is locked out for 15 minutes.
+- **First run:** there is no default account and no password in the environment. The first visitor to the login page is asked to create an account. **Do this right after starting the container**, before anyone else can reach it.
+- **More accounts:** while `ALLOW_SIGNUPS=true`, the login page has a **Create one** link. Set `ALLOW_SIGNUPS=false` once your accounts exist to stop new sign-ups. Creating the first account is always allowed.
+- **Changing a password:** click **Password** in the top bar. This signs out that user's other sessions.
+- **Storage:** accounts live in `/config/users.json`, with passwords as salted scrypt hashes and the file readable only by the container user.
+- **Forgotten password:** remove that user's entry from `/config/users.json` (or delete the file to start over) and restart the container.
 
-**Changing the password:** click **Password** in the top bar. The new password is stored as a salted scrypt hash in `/config/.basic_auth` and replaces `BASIC_AUTH_PASSWORD` from then on. Changing it signs out every other session. If you forget it, delete `/config/.basic_auth` and restart the container to fall back to `BASIC_AUTH_PASSWORD`.
+After 10 failed attempts an IP is locked out for 15 minutes.
+
+> **Upgrading from `BASIC_AUTH_USER` / `BASIC_AUTH_PASSWORD`:** those variables are no longer used. After upgrading, the login page shows the first-account form, so create your account straight away, then remove the old variables from your compose file.
 
 ### Mode 3: Authentik Single Sign-On (OIDC)
 Direct integration with Authentik via OpenID Connect:
