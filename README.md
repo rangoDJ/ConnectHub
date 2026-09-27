@@ -1,4 +1,6 @@
-# Selkies RDP Gateway with WebUI, Multi-GPU, File Sharing & Authentik SSO
+# ConnectHub
+
+**Browser-based remote desktop gateway for RDP, VNC & SSH, with a WebUI, Multi-GPU encoding, File Sharing & Authentik SSO.**
 
 A high-performance, low-latency WebRTC remote desktop container that connects to Windows machines via **FreeRDP 3** and streams the display directly to your browser using **Selkies**. Equipped with a modern **WebUI configuration dashboard**, persistent profile storage, **two-way file sharing**, and **Authentik SSO / Basic Auth**.
 
@@ -37,7 +39,7 @@ flowchart TD
         Stream["Embedded Selkies WebRTC Stream"]
     end
 
-    subgraph Container["Selkies RDP Docker Container (:8080)"]
+    subgraph Container["ConnectHub Docker Container (:8080)"]
         subgraph WebProxy["Nginx Reverse Proxy & Auth Guard"]
             API["FastAPI Backend (Session & File Controller)"]
             AuthEngine["Auth Module (Basic / OIDC / Forward Auth)"]
@@ -92,13 +94,13 @@ flowchart TD
 
 ### 1. Clone & Prepare
 ```bash
-git clone https://github.com/rangoDJ/vnc-hub.git
-cd vnc-hub
+git clone https://github.com/rangoDJ/ConnectHub.git
+cd ConnectHub
 cp .env.example .env
 ```
 
 ### 2. Launch the Container
-The image `ghcr.io/rangodj/vnc-hub:latest` (linux/amd64 + linux/arm64) is built by GitHub Actions on every push to `main`. Tags `sha-<commit>` and, for `vX.Y.Z` git tags, `X.Y.Z` / `X.Y` are also published.
+The image `ghcr.io/rangodj/connecthub:latest` (linux/amd64 + linux/arm64) is built by GitHub Actions on every push to `main`. Tags `sha-<commit>` and, for `vX.Y.Z` git tags, `X.Y.Z` / `X.Y` are also published.
 ```bash
 docker compose pull
 docker compose up -d
@@ -167,17 +169,17 @@ Direct integration with Authentik via OpenID Connect:
 1. **In Authentik Admin Interface**:
    - Go to **Applications** -> **Providers** -> **Create Provider**.
    - Type: **OAuth2/OpenID Provider**.
-   - Name: `Selkies RDP`.
+   - Name: `ConnectHub`.
    - Client type: **Confidential**.
    - Redirect URIs: `http://<your-server-ip-or-domain>:8080/auth/callback`.
    - Scopes: ensure `openid`, `email`, `profile` are selected.
    - Note the **Client ID** and **Client Secret**.
    - Go to **Applications** -> **Create Application**.
-   - Attach the application to your new `Selkies RDP` provider.
+   - Attach the application to your new `ConnectHub` provider.
 2. **In `.env`**:
 ```ini
 AUTH_MODE=oidc
-OIDC_ISSUER_URL=https://authentik.yourdomain.com/application/o/selkies-rdp/
+OIDC_ISSUER_URL=https://authentik.yourdomain.com/application/o/connecthub/
 OIDC_CLIENT_ID=your_authentik_client_id
 OIDC_CLIENT_SECRET=your_authentik_client_secret
 OIDC_REDIRECT_URI=http://<your-server-ip-or-domain>:8080/auth/callback
@@ -240,7 +242,7 @@ To connect to a Windows machine:
 ## Directory Structure
 
 ```
-selkies-vnc/
+ConnectHub/
 ├── Dockerfile                        # Multi-stage image with FreeRDP 3, VA-API & Python
 ├── docker-compose.yml                # CPU, AMD/Intel VA-API, and NVIDIA profiles
 ├── .env.example                      # Template for authentication and GPU settings
@@ -257,7 +259,7 @@ selkies-vnc/
 │       ├── backend/
 │       │   ├── main.py               # FastAPI router and static server
 │       │   ├── auth.py               # Basic Auth, Authentik OIDC & Forward Auth
-│       │   ├── rdp_manager.py        # FreeRDP process supervisor & key injector
+│       │   ├── session_manager.py    # RDP/VNC/SSH process supervisor & key injector
 │       │   ├── file_manager.py       # Upload/download API for /shared
 │       │   └── requirements.txt
 │       └── frontend/
@@ -280,3 +282,9 @@ selkies-vnc/
   Ensure the **🔊 Audio Playback** toggle is enabled before connecting, and that your browser allows autoplay on the gateway URL.
 - **Ctrl + Alt + Del**:
   Click the **Ctrl+Alt+Del** button on the floating stream toolbar. It sends the key sequence (`Ctrl+Alt+End`) recognized by FreeRDP to trigger the Windows security screen without triggering your local host's task manager.
+
+---
+
+## Contributing
+
+Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for how to report bugs, set up a development environment and open a pull request.

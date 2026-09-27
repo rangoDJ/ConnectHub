@@ -1,6 +1,6 @@
 #!/command/with-contenv bash
 
-echo "[s6-init] Starting Selkies RDP WebUI & Session Manager..."
+echo "[s6-init] Starting ConnectHub WebUI & Session Manager..."
 
 export PYTHONUNBUFFERED=1
 export DISPLAY=${DISPLAY:-:1}

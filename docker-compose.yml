@@ -1,12 +1,12 @@
 services:
-  selkies-rdp:
+  connecthub:
     # Prebuilt image published by .github/workflows/docker-publish.yml
-    image: ghcr.io/rangodj/vnc-hub:latest
+    image: ghcr.io/rangodj/connecthub:latest
     # To build locally instead, replace the image line above with:
     # build:
     #   context: .
     #   dockerfile: Dockerfile
-    container_name: selkies-rdp
+    container_name: connecthub
     restart: unless-stopped
     shm_size: "2gb" # Crucial for high-resolution 60fps streaming buffers
 

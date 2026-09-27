@@ -57,8 +57,8 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=ref,event=pr
           labels: |
-            org.opencontainers.image.title=vnc-hub
-            org.opencontainers.image.description=Selkies WebRTC remote desktop gateway for Windows RDP with a WebUI
+            org.opencontainers.image.title=ConnectHub
+            org.opencontainers.image.description=ConnectHub - browser-based remote desktop gateway for RDP, VNC and SSH
 
       - name: Build and push
         uses: docker/build-push-action@v7

@@ -44,7 +44,7 @@ from file_manager import (
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("server")
 
-app = FastAPI(title="Selkies RDP Gateway", version="1.0.0")
+app = FastAPI(title="ConnectHub", version="1.0.0")
 
 CONFIG_DIR = Path(os.environ.get("CONFIG_DIR", "/config"))
 PROFILES_FILE = CONFIG_DIR / "profiles.json"

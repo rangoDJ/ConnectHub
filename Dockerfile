@@ -2,7 +2,7 @@
 FROM ghcr.io/linuxserver/baseimage-selkies:ubuntunoble
 
 LABEL maintainer="kodi"
-LABEL description="Selkies WebRTC remote desktop gateway with FreeRDP, multi-GPU encoding (NVIDIA/AMD/Intel/CPU), Authentik SSO & Basic Auth, and WebUI File Sharing."
+LABEL description="ConnectHub - WebRTC remote desktop gateway for RDP, VNC and SSH, multi-GPU encoding (NVIDIA/AMD/Intel/CPU), Authentik SSO & Basic Auth, and WebUI File Sharing."
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \

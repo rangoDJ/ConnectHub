@@ -79,8 +79,8 @@ const tbBtnClipboard = document.getElementById("tb-btn-clipboard");
 const tbBtnFullscreen = document.getElementById("tb-btn-fullscreen");
 const tbBtnCollapse = document.getElementById("tb-btn-collapse");
 const toolbarExpand = document.getElementById("toolbar-expand");
-const TOOLBAR_COLLAPSED_KEY = "vnchub.toolbarCollapsed";
-const NAV_COLLAPSED_KEY = "vnchub.navCollapsed";
+const TOOLBAR_COLLAPSED_KEY = "connecthub.toolbarCollapsed";
+const NAV_COLLAPSED_KEY = "connecthub.navCollapsed";
 
 // Initialize Application
 async function initApp() {

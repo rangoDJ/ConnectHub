@@ -15,8 +15,8 @@ DEFAULT_PORTS = {"rdp": 3389, "vnc": 5900, "ssh": 22}
 PROTOCOL_NAMES = {"rdp": "RDP", "vnc": "VNC", "ssh": "SSH"}
 
 # WM_CLASS values given to client windows so we can detect when a session is actually up
-RDP_WM_CLASS = "selkies-rdp"
-SSH_WM_CLASS = "VncHubTerm"
+RDP_WM_CLASS = "connecthub"
+SSH_WM_CLASS = "ConnectHubTerm"
 # Log fragments that mean an RDP connection failed even if FreeRDP exits cleanly
 RDP_ERROR_MARKERS = ("ERRCONNECT", "Authentication only, exit status", "LOGON_FAILURE")
 
@@ -46,7 +46,7 @@ SSH_ERRORS = {
 # Runs the client, records its exit code, and keeps the terminal open on failure so the
 # user can read the error. The command is passed as positional args, never interpolated.
 SSH_WRAPPER = (
-    '"$@"; rc=$?; printf "%s" "$rc" > "$VNCHUB_RC_FILE"; '
+    '"$@"; rc=$?; printf "%s" "$rc" > "$CONNECTHUB_RC_FILE"; '
     'if [ "$rc" -ne 0 ]; then printf "\\n[session ended with exit code %s - press Enter to close]" "$rc"; read _; fi'
 )
 
@@ -185,7 +185,7 @@ class SessionManager:
         host = config["host"]
         port = config["port"]
         password = config.get("password", "")
-        workdir = tempfile.mkdtemp(prefix="vnchub-")
+        workdir = tempfile.mkdtemp(prefix="connecthub-")
 
         cmd = [
             "xtigervncviewer",
@@ -228,9 +228,9 @@ class SessionManager:
         ssh_key = (config.get("ssh_key") or "").strip()
         font_size = int(config.get("font_size") or 12)
 
-        workdir = tempfile.mkdtemp(prefix="vnchub-")
+        workdir = tempfile.mkdtemp(prefix="connecthub-")
         rc_file = os.path.join(workdir, "rc")
-        env: Dict[str, str] = {"VNCHUB_RC_FILE": rc_file}
+        env: Dict[str, str] = {"CONNECTHUB_RC_FILE": rc_file}
 
         ssh_cmd = [
             "ssh", "-p", str(port),
@@ -272,7 +272,7 @@ class SessionManager:
             "-xrm", "*selectToClipboard: true",
             "-xrm", "*metaSendsEscape: true",
             "-xrm", "*termName: xterm-256color",
-            "-e", "sh", "-c", SSH_WRAPPER, "vnchub-ssh",
+            "-e", "sh", "-c", SSH_WRAPPER, "connecthub-ssh",
         ] + ssh_cmd
         return Launch(
             cmd=cmd, target=f"{host}:{port}", env=env,

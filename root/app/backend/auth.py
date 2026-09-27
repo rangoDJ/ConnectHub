@@ -65,8 +65,8 @@ def get_or_create_secret_key() -> str:
 SECRET_KEY = get_or_create_secret_key()
 serializer = URLSafeTimedSerializer(SECRET_KEY)
 state_serializer = URLSafeTimedSerializer(SECRET_KEY, salt="oidc-state")
-COOKIE_NAME = "selkies_session"
-STATE_COOKIE_NAME = "selkies_oidc_state"
+COOKIE_NAME = "connecthub_session"
+STATE_COOKIE_NAME = "connecthub_oidc_state"
 STATE_MAX_AGE = 600
 MAX_AGE = 86400 * 7 # 7 days session lifetime
 
