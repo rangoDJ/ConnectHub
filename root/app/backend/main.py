@@ -22,6 +22,9 @@ from auth import (
     oidc_http_client,
     get_current_user,
     check_basic_credentials,
+    set_basic_password,
+    PASSWORD_MIN_LENGTH,
+    PASSWORD_MAX_LENGTH,
     check_login_rate_limit,
     record_login_failure,
     clear_login_failures,
@@ -102,6 +105,10 @@ class LoginRequest(BaseModel):
     username: str
     password: str
 
+class PasswordChangeRequest(BaseModel):
+    current_password: str = Field(..., max_length=PASSWORD_MAX_LENGTH)
+    new_password: str = Field(..., min_length=PASSWORD_MIN_LENGTH, max_length=PASSWORD_MAX_LENGTH)
+
 # Helper functions for profiles storage
 _profiles_lock = threading.Lock()
 
@@ -150,8 +157,9 @@ async def auth_status(request: Request):
     except HTTPException:
         return {"authenticated": False, "user": None, "auth_mode": AUTH_MODE}
 
+# Sync so the scrypt check runs in the threadpool instead of blocking the event loop
 @app.post("/auth/login")
-async def basic_login(req: LoginRequest, request: Request, response: Response):
+def basic_login(req: LoginRequest, request: Request, response: Response):
     if AUTH_MODE != "basic":
         raise HTTPException(status_code=400, detail=f"Basic auth is not enabled (mode is {AUTH_MODE})")
 
@@ -252,6 +260,29 @@ async def logout():
     response = RedirectResponse("/login.html", status_code=status.HTTP_302_FOUND)
     clear_session_cookie(response)
     return response
+
+@app.post("/api/account/password")
+def change_password(req: PasswordChangeRequest, request: Request, response: Response,
+                    user: dict = Depends(get_current_user)):
+    if AUTH_MODE != "basic":
+        raise HTTPException(status_code=400, detail="Passwords can only be changed when AUTH_MODE=basic")
+
+    # A stolen session must not be able to brute-force the current password
+    ip = client_ip(request)
+    check_login_rate_limit(ip)
+    # 403, not 401: the frontend treats 401 as "session expired" and redirects to login
+    if not check_basic_credentials(user["username"], req.current_password):
+        record_login_failure(ip)
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Current password is incorrect")
+    clear_login_failures(ip)
+    if req.new_password == req.current_password:
+        raise HTTPException(status_code=400, detail="New password must be different from the current one")
+
+    set_basic_password(req.new_password)
+    # Every other session was signed with the old epoch; keep this one logged in
+    create_session_cookie(response, {"username": user["username"], "auth_mode": "basic"}, request)
+    logger.info("Password changed for user %s from %s", user["username"], ip)
+    return {"success": True, "message": "Password changed. Other sessions have been signed out."}
 
 @app.get("/auth/verify")
 async def auth_verify(request: Request):

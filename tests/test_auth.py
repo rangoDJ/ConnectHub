@@ -190,3 +190,74 @@ def test_empty_configured_password_rejects_everything(auth, monkeypatch):
     """AUTH_MODE=basic with no password set must not authenticate a blank password."""
     monkeypatch.setattr(auth, "BASIC_AUTH_PASSWORD", "")
     assert not auth.check_basic_credentials("admin", "")
+
+
+# ----------------- Stored password -----------------
+
+def test_password_hash_round_trips(auth):
+    stored = auth.hash_password("correct horse")
+    assert stored.startswith("scrypt$")
+    assert auth.verify_password_hash("correct horse", stored)
+    assert not auth.verify_password_hash("wrong horse", stored)
+
+
+def test_same_password_gets_a_new_salt(auth):
+    assert auth.hash_password("same") != auth.hash_password("same")
+
+
+@pytest.mark.parametrize("stored", ["", "plain", "md5$1$2$3$4$5", "scrypt$x$8$1$AAAA$AAAA", "scrypt$16384$8$1$!!$!!"])
+def test_malformed_hash_never_verifies(auth, stored):
+    assert not auth.verify_password_hash("anything", stored)
+
+
+def test_stored_password_replaces_env_password(auth, monkeypatch):
+    monkeypatch.setattr(auth, "BASIC_AUTH_USER", "admin")
+    monkeypatch.setattr(auth, "BASIC_AUTH_PASSWORD", "from-env")
+    auth.set_basic_password("from-webui")
+    assert auth.check_basic_credentials("admin", "from-webui")
+    assert not auth.check_basic_credentials("admin", "from-env")
+    assert not auth.check_basic_credentials("root", "from-webui")
+
+
+def test_stored_password_survives_a_restart(tmp_path):
+    first = fresh_auth(tmp_path)
+    first.set_basic_password("persisted-pw")
+    second = fresh_auth(tmp_path)
+    second.BASIC_AUTH_USER = "admin"
+    assert second.check_basic_credentials("admin", "persisted-pw")
+    assert second.password_epoch() == first.password_epoch()
+
+
+def test_password_file_is_private(auth, tmp_path):
+    if os.name == "nt":
+        pytest.skip("POSIX permissions")
+    auth.set_basic_password("private-pw")
+    assert (tmp_path / ".basic_auth").stat().st_mode & 0o777 == 0o600
+    assert not (tmp_path / ".basic_auth.tmp").exists()
+
+
+def test_damaged_password_file_fails_closed(tmp_path):
+    """A corrupt file must not quietly bring back the old env password."""
+    (tmp_path / ".basic_auth").write_text("{not json")
+    auth = fresh_auth(tmp_path)
+    auth.BASIC_AUTH_USER = "admin"
+    auth.BASIC_AUTH_PASSWORD = "from-env"
+    assert not auth.check_basic_credentials("admin", "from-env")
+    assert not auth.check_basic_credentials("admin", "")
+
+
+def test_deleting_the_file_falls_back_to_env(tmp_path):
+    fresh_auth(tmp_path).set_basic_password("forgotten-pw")
+    (tmp_path / ".basic_auth").unlink()
+    auth = fresh_auth(tmp_path)
+    auth.BASIC_AUTH_USER = "admin"
+    auth.BASIC_AUTH_PASSWORD = "from-env"
+    assert auth.check_basic_credentials("admin", "from-env")
+
+
+def test_epoch_changes_with_each_password(auth):
+    assert auth.password_epoch() == ""
+    first = auth.set_basic_password("password-one")
+    second = auth.set_basic_password("password-two")
+    assert first and second and first != second
+    assert auth.password_epoch() == second

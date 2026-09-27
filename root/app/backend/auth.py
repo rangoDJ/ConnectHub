@@ -1,6 +1,8 @@
 import os
+import json
 import time
 import base64
+import hashlib
 import secrets
 import logging
 import ipaddress
@@ -96,8 +98,6 @@ def _parse_networks(raw: str) -> List[ipaddress._BaseNetwork]:
 TRUSTED_PROXY_NETS = _parse_networks(FORWARD_AUTH_TRUSTED_PROXIES)
 
 # Startup configuration sanity checks
-if AUTH_MODE == "basic" and not BASIC_AUTH_PASSWORD:
-    logger.error("AUTH_MODE=basic but BASIC_AUTH_PASSWORD is empty; all logins will be rejected")
 if AUTH_MODE == "forward_auth" and not TRUSTED_PROXY_NETS:
     logger.error("AUTH_MODE=forward_auth but FORWARD_AUTH_TRUSTED_PROXIES is empty; all requests will be rejected")
 if AUTH_MODE == "oidc" and not OIDC_VERIFY_SSL:
@@ -114,11 +114,84 @@ def _is_trusted_proxy(ip: str) -> bool:
         return False
     return any(addr in net for net in TRUSTED_PROXY_NETS)
 
-def check_basic_credentials(username: str, password: str) -> bool:
-    if not BASIC_AUTH_PASSWORD:
+# ----------------- Stored password -----------------
+
+# Set from the WebUI. Once present it replaces BASIC_AUTH_PASSWORD; deleting the file
+# falls back to the env password (the recovery path for a forgotten password).
+PASSWORD_FILE = CONFIG_DIR / ".basic_auth"
+PASSWORD_MIN_LENGTH = 8
+PASSWORD_MAX_LENGTH = 1024
+_SCRYPT_N, _SCRYPT_R, _SCRYPT_P = 2 ** 14, 8, 1
+_password_lock = threading.Lock()
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    digest = hashlib.scrypt(password.encode("utf-8"), salt=salt,
+                            n=_SCRYPT_N, r=_SCRYPT_R, p=_SCRYPT_P, dklen=32)
+    b64 = lambda b: base64.b64encode(b).decode("ascii")
+    return f"scrypt${_SCRYPT_N}${_SCRYPT_R}${_SCRYPT_P}${b64(salt)}${b64(digest)}"
+
+def verify_password_hash(password: str, stored: str) -> bool:
+    try:
+        scheme, n, r, p, salt, digest = stored.split("$")
+        if scheme != "scrypt":
+            return False
+        expected = base64.b64decode(digest)
+        actual = hashlib.scrypt(password.encode("utf-8"), salt=base64.b64decode(salt),
+                                n=int(n), r=int(r), p=int(p), dklen=len(expected))
+    except (ValueError, TypeError):
         return False
+    return secrets.compare_digest(actual, expected)
+
+def _load_stored_password() -> Optional[Dict[str, str]]:
+    """None when no password was set from the WebUI. A damaged file fails closed
+    (every login rejected) rather than quietly reviving the old env password."""
+    try:
+        data = json.loads(PASSWORD_FILE.read_text())
+        if isinstance(data.get("hash"), str) and isinstance(data.get("epoch"), str):
+            return data
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, AttributeError):
+        pass
+    logger.error("%s is unreadable; all logins will be rejected until it is deleted", PASSWORD_FILE)
+    return {"hash": "", "epoch": "invalid"}
+
+_stored_password = _load_stored_password()
+
+if AUTH_MODE == "basic" and _stored_password is None and not BASIC_AUTH_PASSWORD:
+    logger.error("AUTH_MODE=basic but BASIC_AUTH_PASSWORD is empty; all logins will be rejected")
+
+def password_epoch() -> str:
+    """Changes whenever the password does. Basic auth cookies carry it, so a password
+    change ends every session signed before it. Empty while the env password is in use."""
+    return _stored_password["epoch"] if _stored_password else ""
+
+def set_basic_password(new_password: str) -> str:
+    """Store a new password hash and return the new epoch."""
+    global _stored_password
+    record = {"hash": hash_password(new_password), "epoch": secrets.token_hex(8)}
+    with _password_lock:
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        # Same pattern as the session secret: private temp file, then atomic replace
+        tmp = PASSWORD_FILE.with_name(PASSWORD_FILE.name + ".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump(record, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, PASSWORD_FILE)
+        _stored_password = record
+    return record["epoch"]
+
+def check_basic_credentials(username: str, password: str) -> bool:
     user_ok = secrets.compare_digest(username.encode("utf-8"), BASIC_AUTH_USER.encode("utf-8"))
-    pass_ok = secrets.compare_digest(password.encode("utf-8"), BASIC_AUTH_PASSWORD.encode("utf-8"))
+    if _stored_password is not None:
+        pass_ok = bool(_stored_password["hash"]) and verify_password_hash(password, _stored_password["hash"])
+    elif BASIC_AUTH_PASSWORD:
+        pass_ok = secrets.compare_digest(password.encode("utf-8"), BASIC_AUTH_PASSWORD.encode("utf-8"))
+    else:
+        return False
     return user_ok and pass_ok
 
 # ----------------- Login rate limiting -----------------
@@ -218,6 +291,8 @@ def _cookie_secure(request: Optional[Request]) -> bool:
     return proto.split(",")[0].strip().lower() == "https"
 
 def create_session_cookie(response: Response, user_data: dict, request: Optional[Request] = None):
+    if user_data.get("auth_mode") == "basic":
+        user_data = {**user_data, "pwv": password_epoch()}
     token = serializer.dumps(user_data)
     response.set_cookie(
         key=COOKIE_NAME,
@@ -282,7 +357,10 @@ def get_current_user(request: Request) -> Dict[str, Any]:
     if cookie_token:
         try:
             data = serializer.loads(cookie_token, max_age=MAX_AGE)
-            if data.get("auth_mode") == AUTH_MODE:
+            # Basic auth sessions end when the password changes. Cookies from before
+            # this check have no "pwv" and stay valid until the first change.
+            stale = AUTH_MODE == "basic" and data.get("pwv", "") != password_epoch()
+            if data.get("auth_mode") == AUTH_MODE and not stale:
                 return {
                     "authenticated": True,
                     "username": data.get("username", "user"),

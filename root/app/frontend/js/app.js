@@ -66,6 +66,11 @@ const fileAlert = document.getElementById("file-alert");
 const btnOpenClipboard = document.getElementById("btn-open-clipboard");
 const btnCloseClipboard = document.getElementById("btn-close-clipboard");
 const clipStatus = document.getElementById("clip-status");
+const passwordDrawer = document.getElementById("password-drawer");
+const btnOpenPassword = document.getElementById("btn-open-password");
+const btnClosePassword = document.getElementById("btn-close-password");
+const passwordForm = document.getElementById("password-form");
+const passwordStatus = document.getElementById("password-status");
 
 // Floating Toolbar Elements
 const streamToolbar = document.getElementById("stream-toolbar");
@@ -123,7 +128,10 @@ async function checkAuth() {
         if (data.authenticated && data.auth_mode !== "none") {
             userProfile.classList.remove("hidden");
             userDisplayName.textContent = data.user;
+            document.getElementById("password-username").value = data.user;
         }
+        // SSO and forward auth passwords live with the identity provider
+        btnOpenPassword.classList.toggle("hidden", !(data.authenticated && data.auth_mode === "basic"));
     } catch (e) {
         console.warn("Could not check auth status", e);
     }
@@ -202,6 +210,13 @@ function setupEventListeners() {
 
     btnOpenClipboard.addEventListener("click", () => openDrawer(clipboardDrawer));
     btnCloseClipboard.addEventListener("click", () => closeDrawer(clipboardDrawer));
+    btnOpenPassword.addEventListener("click", () => {
+        passwordForm.reset();
+        passwordStatus.classList.add("hidden");
+        openDrawer(passwordDrawer);
+    });
+    btnClosePassword.addEventListener("click", () => closeDrawer(passwordDrawer));
+    passwordForm.addEventListener("submit", handlePasswordChange);
     drawerBackdrop.addEventListener("click", closeAllDrawers);
 
     // File Upload Zone
@@ -884,7 +899,44 @@ function closeDrawer(drawer) {
 function closeAllDrawers() {
     fileDrawer.classList.remove("open");
     clipboardDrawer.classList.remove("open");
+    passwordDrawer.classList.remove("open");
     drawerBackdrop.classList.add("hidden");
+}
+
+// ----------------- Change Password -----------------
+
+function showPasswordStatus(message, type) {
+    passwordStatus.textContent = message;
+    passwordStatus.className = `alert-box alert-${type}`;
+}
+
+async function handlePasswordChange(e) {
+    e.preventDefault();
+    const current = document.getElementById("current-password").value;
+    const next = document.getElementById("new-password").value;
+    if (next !== document.getElementById("confirm-password").value) {
+        showPasswordStatus("New passwords don't match", "error");
+        return;
+    }
+    const btn = document.getElementById("btn-password-save");
+    btn.disabled = true;
+    try {
+        const res = await apiFetch("/api/account/password", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ current_password: current, new_password: next })
+        });
+        if (!res.ok) {
+            showPasswordStatus(await errorMessage(res, "Failed to change password"), "error");
+            return;
+        }
+        passwordForm.reset();
+        showPasswordStatus((await res.json()).message, "success");
+    } catch (err) {
+        if (err.message !== "Not authenticated") showPasswordStatus("Network error changing password", "error");
+    } finally {
+        btn.disabled = false;
+    }
 }
 
 // ----------------- Utility Helpers -----------------

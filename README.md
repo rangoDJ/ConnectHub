@@ -163,6 +163,8 @@ BASIC_AUTH_PASSWORD=YourSecurePasswordHere!
 ```
 There is no default password: logins are rejected until `BASIC_AUTH_PASSWORD` is set. After 10 failed attempts an IP is locked out for 15 minutes.
 
+**Changing the password:** click **Password** in the top bar. The new password is stored as a salted scrypt hash in `/config/.basic_auth` and replaces `BASIC_AUTH_PASSWORD` from then on. Changing it signs out every other session. If you forget it, delete `/config/.basic_auth` and restart the container to fall back to `BASIC_AUTH_PASSWORD`.
+
 ### Mode 3: Authentik Single Sign-On (OIDC)
 Direct integration with Authentik via OpenID Connect:
 
