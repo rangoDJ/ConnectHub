@@ -59,6 +59,11 @@ RUN chmod +x \
     /defaults/autostart \
     /etc/s6-overlay/s6-rc.d/02-rdp-webui/run
 
+# Release version, set by CI. Declared last so a new version doesn't invalidate
+# the cached package and pip layers above.
+ARG APP_VERSION=0.0.0-dev
+ENV CONNECTHUB_VERSION=$APP_VERSION
+
 # Volumes
 VOLUME ["/config", "/shared"]
 
