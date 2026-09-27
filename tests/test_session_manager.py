@@ -16,6 +16,7 @@ def mgr(monkeypatch):
     manager.current_target = None
     manager.start_time = None
     manager.lock = sm.threading.Lock()
+    manager._log_lock = sm.threading.Lock()
     manager._user_disconnected = set()
     manager._pending_connect = None
     manager.rdp_binary = "xfreerdp"
@@ -315,3 +316,61 @@ def test_second_connect_while_one_is_starting_is_refused(mgr, monkeypatch):
     mgr.connect({"protocol": "vnc", "host": "10.0.0.5"})
     assert results and not results[0]["success"]
     assert "already starting" in results[0]["message"]
+
+
+# ----------------- Dashboard log panel -----------------
+
+@pytest.fixture
+def panel(mgr):
+    """Route session_manager's log messages into mgr's panel log for the test."""
+    handler = sm.PanelLogHandler(mgr)
+    sm.logger.addHandler(handler)
+    previous = sm.logger.level
+    sm.logger.setLevel(sm.logging.INFO)
+    yield mgr
+    sm.logger.removeHandler(handler)
+    sm.logger.setLevel(previous)
+
+
+def test_connecthub_messages_reach_the_panel(panel):
+    sm.logger.info("Display settled at (2880, 1472); starting the session")
+    assert len(panel.log_history) == 1
+    line = panel.log_history[0]
+    assert "[INFO][connecthub]" in line
+    assert "Display settled" in line
+
+
+def test_logging_while_holding_the_session_lock_does_not_deadlock(panel):
+    """connect() logs inside `with self.lock`; the panel must not need that lock."""
+    done = sm.threading.Event()
+
+    def log_under_lock():
+        with panel.lock:
+            sm.logger.warning("logged while locked")
+        done.set()
+
+    t = sm.threading.Thread(target=log_under_lock, daemon=True)
+    t.start()
+    assert done.wait(2), "deadlocked appending a log line under the session lock"
+    assert "logged while locked" in panel.log_history[-1]
+
+
+def test_connect_messages_survive_the_log_reset(panel, monkeypatch):
+    """The log is cleared at the start of each connect; its own messages come after that."""
+    panel._append_log("line from the previous session")
+    monkeypatch.setattr(panel, "_wait_for_display_to_settle", lambda: sm.logger.info("Display settled"))
+    monkeypatch.setattr(sm.subprocess, "Popen", lambda *a, **k: (_ for _ in ()).throw(OSError("no client")))
+    panel.connect({"protocol": "vnc", "host": "10.0.0.5"})
+    text = "\n".join(panel.log_history)
+    assert "previous session" not in text
+    assert "Display settled" in text
+    assert "Starting VNC session to 10.0.0.5:5900" in text
+    assert "Failed to launch VNC client" in text
+
+
+def test_status_returns_the_whole_log_not_just_the_tail(mgr):
+    for i in range(60):
+        mgr._append_log(f"line {i}")
+    logs = mgr.get_status()["recent_logs"]
+    assert len(logs) == 60
+    assert logs[0] == "line 0"

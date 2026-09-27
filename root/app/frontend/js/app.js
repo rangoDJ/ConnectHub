@@ -404,7 +404,13 @@ async function pollStatus() {
 
         // Update logs
         if (data.recent_logs && data.recent_logs.length > 0) {
-            logsContent.textContent = data.recent_logs.join("\n");
+            const text = data.recent_logs.join("\n");
+            if (logsContent.textContent !== text) {
+                // Follow new lines unless the user has scrolled up to read older ones
+                const atBottom = logsBody.scrollHeight - logsBody.scrollTop - logsBody.clientHeight < 24;
+                logsContent.textContent = text;
+                if (atBottom) logsBody.scrollTop = logsBody.scrollHeight;
+            }
         }
 
         // Show/hide view toggle button based on whether connected

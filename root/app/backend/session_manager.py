@@ -82,6 +82,22 @@ class ConfigError(Exception):
     pass
 
 
+class PanelLogHandler(logging.Handler):
+    """Copies this module's log messages into the session log shown in the dashboard's
+    Connection Logs panel, next to the client's own output."""
+
+    def __init__(self, manager: "SessionManager"):
+        super().__init__(logging.INFO)
+        self.manager = manager
+        self.setFormatter(logging.Formatter("[%(asctime)s] [%(levelname)s][connecthub] %(message)s", "%H:%M:%S"))
+
+    def emit(self, record: logging.LogRecord):
+        try:
+            self.manager._append_log(self.format(record))
+        except Exception:
+            self.handleError(record)
+
+
 class SessionManager:
     def __init__(self):
         self.process: Optional[subprocess.Popen] = None
@@ -93,11 +109,14 @@ class SessionManager:
         self.current_target: Optional[str] = None
         self.start_time: Optional[float] = None
         self.lock = threading.Lock()
+        # Separate from self.lock: messages are logged (and so appended) while self.lock is held
+        self._log_lock = threading.Lock()
         self._user_disconnected: set = set()
         # Token of a connect() waiting for the display to settle; cleared to cancel it
         self._pending_connect: Optional[object] = None
         self.rdp_binary = "xfreerdp"
         self.supports_args_from = False
+        logger.addHandler(PanelLogHandler(self))
         self._find_xfreerdp_binary()
 
     def _find_xfreerdp_binary(self):
@@ -124,10 +143,18 @@ class SessionManager:
         line = line.strip()
         if not line:
             return
-        with self.lock:
+        with self._log_lock:
             self.log_history.append(line)
             if len(self.log_history) > self.max_logs:
                 self.log_history.pop(0)
+
+    def _clear_log(self):
+        with self._log_lock:
+            self.log_history.clear()
+
+    def _log_snapshot(self) -> List[str]:
+        with self._log_lock:
+            return list(self.log_history)
 
     # ----------------- Command builders -----------------
 
@@ -449,7 +476,7 @@ class SessionManager:
             # status says disconnected, and the stream is what sizes the display we wait on
             attempt = object()
             self._pending_connect = attempt
-            self.log_history.clear()
+            self._clear_log()
             self.last_error = None
             self.protocol = protocol
             self.current_target = f"{config['host']}:{config['port']}"
@@ -540,7 +567,8 @@ class SessionManager:
                 "target": self.current_target,
                 "uptime_seconds": uptime,
                 "last_error": self.last_error,
-                "recent_logs": self.log_history[-20:]
+                # The whole session log (capped at max_logs), not just the tail
+                "recent_logs": self._log_snapshot()
             }
 
     def send_keys(self, key_combination: str) -> Dict[str, Any]:
