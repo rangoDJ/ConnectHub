@@ -116,10 +116,10 @@ https://<your-server-ip>:8443   (self-signed; required for browser clipboard acc
 
 ## Hardware Acceleration (GPU Setup)
 
-The container uses `SELKIES_ENCODER=h264enc`, which automatically detects and uses hardware encoders (NVENC or VA-API) if passed, and cleanly falls back to CPU software encoding (`x264`) if not.
+The container uses `SELKIES_ENCODER=h264enc`, which encodes on the GPU (NVENC or VA-API) when one is passed to the container and falls back to CPU software encoding (`x264`) when not. `AUTO_GPU` picks the GPU (`true` for automatic, or `nvidia`, `amdgpu`, `intel`).
 
 ### Profile A: CPU Software Encoding (Default)
-No extra configuration required! The default `docker-compose.yml` runs anywhere without GPU requirements.
+No extra configuration required! The default `docker-compose.yml` runs anywhere without GPU requirements. To force CPU encoding on a host that does have a GPU, set `SELKIES_USE_CPU=true`.
 
 ### Profile B: AMD Radeon or Intel Iris/Arc/UHD (VA-API)
 1. Ensure the user running Docker is in the `video` and `render` groups.
@@ -131,7 +131,7 @@ devices:
 
 ### Profile C: NVIDIA GPU (NVENC)
 1. Install [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) on the host.
-2. In `docker-compose.yml`, uncomment the `deploy:` block and the `NVIDIA_*` lines inside the existing `environment:` list:
+2. In `docker-compose.yml`, uncomment the `deploy:` block and the `NVIDIA_*` and `AUTO_GPU=nvidia` lines inside the existing `environment:` list:
 ```yaml
 deploy:
   resources:

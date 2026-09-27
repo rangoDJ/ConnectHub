@@ -20,8 +20,11 @@ services:
       - TZ=Etc/UTC
 
       # ================= Encoding Configuration =================
-      # Options: h264enc (auto NVENC/VAAPI/CPU fallback), x264enc (CPU only), jpeg
+      # h264enc uses the GPU when one is passed below, otherwise x264 on the CPU.
+      # Also: h265enc, vp8enc, vp9enc, av1enc, jpeg (comma-separate to offer several)
       - SELKIES_ENCODER=h264enc
+      # Force CPU encoding even when a GPU is available
+      # - SELKIES_USE_CPU=true
 
       # ================= Authentication Configuration =================
       # Options: none, basic, oidc, forward_auth
@@ -57,6 +60,7 @@ services:
       # --- GPU: NVIDIA (NVENC) — uncomment together with the deploy block below ---
       # - NVIDIA_VISIBLE_DEVICES=all
       # - NVIDIA_DRIVER_CAPABILITIES=all
+      # - AUTO_GPU=nvidia
 
     volumes:
       # Persistent storage for saved connection profiles and session secrets
