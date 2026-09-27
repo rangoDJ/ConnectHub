@@ -22,7 +22,7 @@ Please do **not** open a public issue for security vulnerabilities (for example 
 
 ## Suggesting Features
 
-Open an issue describing the problem you want to solve and how you imagine it working. For larger changes (new protocols, new auth modes, changes to the container layout) please discuss the idea in an issue before starting on a pull request.
+Open an issue describing the problem you want to solve and how you imagine it working. Every change starts with an issue (see [Workflow](#workflow-one-issue-one-pull-request)). For larger changes (new protocols, new auth modes, changes to the container layout) please discuss the idea in an issue before starting on a pull request.
 
 ---
 
@@ -69,10 +69,22 @@ The tests use temporary directories for `/config` and `/shared`, so they don't n
 
 ---
 
+## Workflow: One Issue, One Pull Request
+
+Every change follows the same path:
+
+1. **Create the issue first.** Describe the problem or feature before writing any code, even if you plan to fix it yourself.
+2. **Open one pull request for that issue.** Each PR fixes exactly one issue, and each issue is fixed by one PR. Reference it in the PR description with `Fixes #N`.
+3. **Found something else along the way?** Don't fold it into the current PR. Open a new issue for it, then a separate PR. If the new fix depends on an open PR, base it on that PR's branch and say which to merge first.
+4. **Test before merging.** A PR is merged only once it has been tested (see [Making Changes](#making-changes)).
+5. **Merge, then close the issue.** `Fixes #N` closes the issue automatically when the PR lands on `main`. If it was merged into another branch instead, close the issue by hand with a link to the PR.
+
+---
+
 ## Making Changes
 
 1. Fork the repository and create a branch from `main` with a descriptive name, e.g. `fix/vnc-resize` or `feature/ssh-agent-forwarding`.
-2. Keep each pull request focused on a single change. Unrelated refactors are easier to review as separate PRs.
+2. Keep the pull request to the one issue it fixes (see [Workflow](#workflow-one-issue-one-pull-request)). Unrelated refactors get their own issue and PR.
 3. Run `pytest` and add or update tests for any backend change.
 4. Test your change in a running container against at least one real target for every protocol it affects.
 5. Update `README.md` if you add or change environment variables, ports, volumes or user-facing behaviour.
@@ -95,7 +107,7 @@ The tests use temporary directories for `/config` and `/shared`, so they don't n
 
 When opening a pull request:
 
-- Describe what changed and why, and link any related issue (e.g. `Fixes #12`).
+- Link the one issue it fixes with `Fixes #12`, and describe what changed and why.
 - Explain how you tested it (protocol, target OS, auth mode, GPU/CPU encoder).
 - Include screenshots or a short recording for UI changes.
 - Make sure `pytest` passes locally and the GitHub Actions image build succeeds.
