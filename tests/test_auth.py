@@ -212,7 +212,20 @@ def test_create_user_then_log_in(auth):
     assert not auth.check_basic_credentials("bob", "alice-password")
 
 
-def test_usernames_are_unique_ignoring_case(auth):
+@pytest.fixture
+def open_signups(auth, monkeypatch):
+    monkeypatch.setattr(auth, "ALLOW_SIGNUPS", True)
+
+
+def test_signups_are_closed_by_default(auth):
+    assert auth.ALLOW_SIGNUPS is False
+    auth.create_user("alice", "alice-password")
+    assert not auth.signups_open()
+    with pytest.raises(PermissionError):
+        auth.create_user("bob", "bob-password")
+
+
+def test_usernames_are_unique_ignoring_case(auth, open_signups):
     auth.create_user("alice", "alice-password")
     with pytest.raises(ValueError):
         auth.create_user("Alice", "other-password")
@@ -227,7 +240,7 @@ def test_first_account_is_allowed_even_with_signups_disabled(auth, monkeypatch):
         auth.create_user("bob", "bob-password")
 
 
-def test_signups_stay_open_when_allowed(auth):
+def test_signups_stay_open_when_allowed(auth, open_signups):
     auth.create_user("alice", "alice-password")
     auth.create_user("bob", "bob-password")
     assert auth.check_basic_credentials("bob", "bob-password")
@@ -264,7 +277,7 @@ def test_damaged_users_file_fails_closed(tmp_path):
         auth.create_user("mallory", "mallory-password")
 
 
-def test_password_change_rotates_only_that_users_epoch(auth):
+def test_password_change_rotates_only_that_users_epoch(auth, open_signups):
     auth.create_user("alice", "alice-password")
     auth.create_user("bob", "bob-password")
     alice, bob = auth.user_epoch("alice"), auth.user_epoch("bob")

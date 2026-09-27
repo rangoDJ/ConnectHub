@@ -23,8 +23,8 @@ def _env_bool(name: str, default: bool) -> bool:
 
 # Authentication configuration from environment
 AUTH_MODE = os.environ.get("AUTH_MODE", "none").lower() # none, basic, oidc, forward_auth
-# Basic auth: set false to stop new accounts being created from the login page
-ALLOW_SIGNUPS = _env_bool("ALLOW_SIGNUPS", True)
+# Basic auth: set true to let visitors create more accounts from the login page
+ALLOW_SIGNUPS = _env_bool("ALLOW_SIGNUPS", False)
 
 # OIDC / Authentik configuration
 OIDC_ISSUER_URL = os.environ.get("OIDC_ISSUER_URL", "").rstrip("/")
