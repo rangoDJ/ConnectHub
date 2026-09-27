@@ -20,6 +20,12 @@ SSH_WM_CLASS = "ConnectHubTerm"
 # Log fragments that mean an RDP connection failed even if FreeRDP exits cleanly
 RDP_ERROR_MARKERS = ("ERRCONNECT", "Authentication only, exit status", "LOGON_FAILURE")
 
+# How long to wait for the client's window before assuming the session is up anyway.
+# Without a cap, a window that never matches keeps the status stuck on "connecting"
+# and spawns an xdotool search every 0.5s for the whole session.
+WINDOW_WAIT_SECONDS = 20
+XDOTOOL_MISSING_FALLBACK_SECONDS = 3
+
 # Only these named key actions may be injected into the X display, per protocol
 KEY_MAP = {
     "rdp": {
@@ -311,9 +317,18 @@ class SessionManager:
             found = self._window_exists(launch, proc)
             if found is None:
                 # xdotool unavailable: fall back to a simple liveness heuristic
-                if time.time() - started < 3:
+                if time.time() - started < XDOTOOL_MISSING_FALLBACK_SECONDS:
                     time.sleep(0.5)
                     continue
+                found = True
+            elif not found and time.time() - started >= WINDOW_WAIT_SECONDS:
+                # The client is alive but its window never matched -- some viewers don't
+                # set _NET_WM_PID. Assume it is up rather than polling xdotool twice a
+                # second for the rest of the session and never leaving "connecting".
+                logger.warning(
+                    "No window found for %s after %ss; assuming the session is up",
+                    launch.target, WINDOW_WAIT_SECONDS
+                )
                 found = True
             if found:
                 with self.lock:
