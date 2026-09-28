@@ -51,6 +51,10 @@ RUN if [ ! -f /usr/bin/xfreerdp ] && [ -f /usr/bin/xfreerdp3 ]; then \
 # Create shared folder for RDP drive redirection & web file manager
 RUN mkdir -p /shared /config /app/backend /app/frontend
 
+# Patch Selkies client-side clipboard engine for Chromium/Brave/Edge image paste support
+COPY scripts/patch_selkies.py /tmp/patch_selkies.py
+RUN python3 /tmp/patch_selkies.py && rm -f /tmp/patch_selkies.py
+
 # Copy root configuration files
 COPY root/ /
 
