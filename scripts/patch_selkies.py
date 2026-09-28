@@ -52,7 +52,7 @@ def patch_file(filepath):
             code = code.replace(old, new, 1)
             applied += 1
         elif new in code:
-            print("Notice: replacement already applied.")
+            print(f"Notice: replacement already applied: {old[:40]}...")
             applied += 1
         else:
             print(f"Warning: pattern not found: {old[:60]}...")
@@ -60,18 +60,40 @@ def patch_file(filepath):
     if applied == len(replacements):
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(code)
-        print(f"Successfully applied all {applied} patches ({original_len} -> {len(code)} bytes).")
+        print(f"Successfully applied all {applied} patches to {filepath} ({original_len} -> {len(code)} bytes).")
         return True
     else:
-        print(f"Only {applied}/{len(replacements)} patches matched.")
+        print(f"Only {applied}/{len(replacements)} patches matched in {filepath}.")
         return False
 
+def find_targets():
+    if len(sys.argv) > 1:
+        matches = glob.glob(sys.argv[1])
+        if matches:
+            return matches
+
+    candidates = []
+    search_roots = ["/usr/share/selkies", "/usr/local/share/selkies", "/usr/share", "/lsiopy"]
+    for root_dir in search_roots:
+        if os.path.isdir(root_dir):
+            for root, dirs, files in os.walk(root_dir):
+                for file in files:
+                    if file.startswith("selkies-core") and file.endswith(".js"):
+                        full_path = os.path.join(root, file)
+                        if full_path not in candidates:
+                            candidates.append(full_path)
+            if candidates:
+                break
+
+    return candidates
+
 if __name__ == "__main__":
-    target_pattern = sys.argv[1] if len(sys.argv) > 1 else "/usr/share/selkies/web/assets/selkies-core-*.js"
-    matches = glob.glob(target_pattern)
-    if not matches:
-        print(f"No files matched pattern: {target_pattern}")
+    targets = find_targets()
+    if not targets:
+        print("No selkies-core*.js files found in search roots.")
         sys.exit(1)
-    for m in matches:
-        if not patch_file(m):
+
+    print(f"Found {len(targets)} target file(s): {targets}")
+    for t in targets:
+        if not patch_file(t):
             sys.exit(1)
