@@ -160,8 +160,9 @@ def find_profile(profiles: List[Dict[str, Any]], profile_id: Optional[str]) -> O
 
 # ----------------- Authentication Routes -----------------
 
+# Sync like the routes below: get_current_user may run a scrypt check (Basic header)
 @app.get("/auth/status")
-async def auth_status(request: Request):
+def auth_status(request: Request):
     basic = AUTH_MODE == "basic"
     # Lets the login page show "create the first account" or a sign-up link
     accounts = {"setup_required": basic and setup_required(), "signups_open": basic and signups_open()}
@@ -322,7 +323,7 @@ def change_password(req: PasswordChangeRequest, request: Request, response: Resp
     return {"success": True, "message": "Password changed. Your other sessions have been signed out."}
 
 @app.get("/auth/verify")
-async def auth_verify(request: Request):
+def auth_verify(request: Request):
     """Endpoint called by Nginx auth_request to protect the WebUI and Selkies stream."""
     try:
         get_current_user(request)
@@ -458,7 +459,7 @@ def api_delete_file(path: str, user: dict = Depends(get_current_user)):
 # In the container nginx serves these directly; kept for running the backend standalone.
 
 @app.get("/")
-async def root_index(request: Request):
+def root_index(request: Request):
     if AUTH_MODE != "none":
         try:
             get_current_user(request)
@@ -467,7 +468,7 @@ async def root_index(request: Request):
     return FileResponse(FRONTEND_DIR / "index.html")
 
 @app.get("/login.html")
-async def login_page(request: Request):
+def login_page(request: Request):
     if AUTH_MODE == "none":
         return RedirectResponse("/")
     try:
