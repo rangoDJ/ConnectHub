@@ -2,65 +2,125 @@ import glob
 import os
 import sys
 
-def patch_file(filepath):
+# The Selkies web client (selkies-core*.js), minified
+CLIENT_REPLACEMENTS = [
+    # 1. Fallback to text if binary read throws NotAllowedError on focus
+    (
+        'catch(e){if(e&&e.name===`DataError`)return t();throw e}',
+        'catch(e){if(e&&(e.name===`DataError`||e.name===`NotAllowedError`))return t();throw e}'
+    ),
+    # 2. Add a readAndSend parameter to ft (createClipboardGestures), and a gate for it.
+    # The gate has to live here at ft's top level: inside the key handler the names
+    # r and i are the handler's own locals (writeInFlight, hold), not canSync/canRead.
+    # Chromium only -- elsewhere a keydown read raises a paste prompt (Firefox) or is
+    # rejected (WebKit), and the paste event already carries the clipboard. Also skipped
+    # without HTTPS (no navigator.clipboard) or with clipboard-read denied: the read then
+    # fails, while the hold it starts cancels the keydown and with it the paste event
+    # (patch 4), the one path that still carries the image there.
+    (
+        'function ft({isChromium:e,clipboardSync:t,sendClipboardData:n,canSync:r,canRead:i,canWrite:a,binaryEnabled:o,getSendInFlight:s,getDeferredWriteInFlight:c}){',
+        'function ft({isChromium:e,clipboardSync:t,sendClipboardData:n,canSync:r,canRead:i,canWrite:a,binaryEnabled:o,getSendInFlight:s,getDeferredWriteInFlight:c,readAndSend:__chReadAndSend=null}){'
+        'let __chReadPerm=`prompt`;'
+        'try{navigator.permissions.query({name:`clipboard-read`}).then(p=>{__chReadPerm=p.state;p.onchange=()=>{__chReadPerm=p.state}},()=>{})}catch(_){}'
+        'let __chPasteRead=()=>{if(!e||!__chReadAndSend||!window.isSecureContext||__chReadPerm===`denied`||!r()||!i()||s())return;'
+        'let ae=document.activeElement;'
+        'if(ae&&ae.id!==`overlayInput`&&(ae.tagName===`INPUT`||ae.tagName===`TEXTAREA`||ae.tagName===`SELECT`||ae.isContentEditable))return;'
+        'try{let p=__chReadAndSend();p&&p.catch&&p.catch(()=>{})}catch(_){}};'
+    ),
+    # 3. Read the local clipboard on the Ctrl/Cmd+V keydown, inside the user gesture.
+    # Inserted after the handler's `let` so it can't hit those bindings' TDZ, and
+    # before the hold check, which then sees the new send in flight and holds the V
+    # until what it pastes has reached the session.
+    (
+        'if(e.code!==`KeyV`&&!t)return;let n=(e.ctrlKey||e.metaKey)&&!e.altKey,r=c?c():null;',
+        'if(e.code!==`KeyV`&&!t)return;let n=(e.ctrlKey||e.metaKey)&&!e.altKey,r=c?c():null;if(e.type===`keydown`&&e.code===`KeyV`&&n&&!e.repeat)__chPasteRead();'
+    ),
+    # 4. Unconditionally listen for paste events in g()
+    (
+        'function g(){window.addEventListener(`keydown`,h,!0),window.addEventListener(`keyup`,h,!0),e||(window.addEventListener(`keydown`,ee,!0),window.addEventListener(`paste`,te,!0))}',
+        'function g(){window.addEventListener(`keydown`,h,!0),window.addEventListener(`keyup`,h,!0),(e||window.addEventListener(`keydown`,ee,!0)),window.addEventListener(`paste`,te,!0)}'
+    ),
+    # 5. Unconditionally remove paste listener in ne()
+    (
+        'function ne(){window.removeEventListener(`keydown`,h,!0),window.removeEventListener(`keyup`,h,!0),e||(window.removeEventListener(`keydown`,ee,!0),window.removeEventListener(`paste`,te,!0))}',
+        'function ne(){window.removeEventListener(`keydown`,h,!0),window.removeEventListener(`keyup`,h,!0),(e||window.removeEventListener(`keydown`,ee,!0)),window.removeEventListener(`paste`,te,!0)}'
+    ),
+    # 6. Pass readAndSend in WebRTC ft initialization
+    (
+        'getDeferredWriteInFlight:()=>z.getInFlight()});async function yr()',
+        'getDeferredWriteInFlight:()=>z.getInFlight(),readAndSend:()=>hr.readAndSend()});async function yr()'
+    ),
+    # 7. Pass readAndSend in WebSocket ft initialization
+    (
+        'getDeferredWriteInFlight:()=>vn.getInFlight()}).wire();let b=()=>{',
+        'getDeferredWriteInFlight:()=>vn.getInFlight(),readAndSend:()=>On.readAndSend()}).wire();let b=()=>{'
+    ),
+]
+
+# The Selkies server (selkies/input_handler.py, Selkies 2.0.0)
+SERVER_REPLACEMENTS = [
+    # 1. Offer a BMP beside every image a client pastes. FreeRDP's X11 client gives
+    # Windows images as CF_DIB, and Ubuntu's build converts only image/bmp to it: its
+    # debian/rules passes -DWITH_WINPR_UTILS_IMAGE_PNG=ON (and _JPEG, _WEBP), but the
+    # option is WINPR_UTILS_IMAGE_PNG, so libwinpr is built without them. The PNG the
+    # browser sends is then never offered to Windows. Converted in the executor, as a
+    # large image takes a while and write_clipboard runs on the event loop.
+    (
+        "        entries = [(m, d if isinstance(d, bytes) else d.encode('utf-8'))\n"
+        "                   for m, d in (flavours or [(mime_type, input_bytes)])]\n",
+        "        entries = [(m, d if isinstance(d, bytes) else d.encode('utf-8'))\n"
+        "                   for m, d in (flavours or [(mime_type, input_bytes)])]\n"
+        "        # ConnectHub: FreeRDP takes images only as BMP (see _connecthub_bmp_beside)\n"
+        "        entries += await asyncio.get_running_loop().run_in_executor(\n"
+        "            None, _connecthub_bmp_beside, entries)\n"
+    ),
+    # 2. The conversion, defined once the module's imports and logger exist
+    (
+        '\nlogger_webrtc_input = logging.getLogger("input")\n',
+        '\nlogger_webrtc_input = logging.getLogger("input")\n'
+        '\n'
+        '\n'
+        'def _connecthub_bmp_beside(entries):\n'
+        '    """ConnectHub: a BMP of the first image in a clipboard write, to offer beside it.\n'
+        '\n'
+        '    FreeRDP hands an image to Windows only when the X clipboard offers image/bmp.\n'
+        '    Transparency is flattened onto white: most Windows apps ignore a 32-bit BMP\'s\n'
+        '    alpha and would show transparent pixels as their (often black) color.\n'
+        '    """\n'
+        '    if any(mime == "image/bmp" for mime, _data in entries):\n'
+        '        return []\n'
+        '    for mime, data in entries:\n'
+        '        if not mime.startswith("image/") or mime.startswith("image/svg"):\n'
+        '            continue\n'
+        '        try:\n'
+        '            with Image.open(io.BytesIO(data)) as im:\n'
+        '                if im.mode in ("RGBA", "LA", "PA") or "transparency" in im.info:\n'
+        '                    rgba = im.convert("RGBA")\n'
+        '                    frame = Image.new("RGB", rgba.size, (255, 255, 255))\n'
+        '                    frame.paste(rgba, mask=rgba.getchannel("A"))\n'
+        '                else:\n'
+        '                    frame = im.convert("RGB")\n'
+        '            out = io.BytesIO()\n'
+        '            frame.save(out, "BMP")\n'
+        '            return [("image/bmp", out.getvalue())]\n'
+        '        except Exception as e:\n'
+        '            logger_webrtc_input.warning(f"ConnectHub: no BMP beside clipboard {mime}: {e}")\n'
+        '            return []\n'
+        '    return []\n'
+    ),
+]
+
+
+def patch_file(filepath, replacements=CLIENT_REPLACEMENTS):
     print(f"Inspecting {filepath}...")
     with open(filepath, "r", encoding="utf-8") as f:
         code = f.read()
 
     original_len = len(code)
-    replacements = [
-        # 1. Fallback to text if binary read throws NotAllowedError on focus
-        (
-            'catch(e){if(e&&e.name===`DataError`)return t();throw e}',
-            'catch(e){if(e&&(e.name===`DataError`||e.name===`NotAllowedError`))return t();throw e}'
-        ),
-        # 2. Add a readAndSend parameter to ft (createClipboardGestures), and a gate for it.
-        # The gate has to live here at ft's top level: inside the key handler the names
-        # r and i are the handler's own locals (writeInFlight, hold), not canSync/canRead.
-        # Chromium only -- elsewhere a keydown read raises a paste prompt (Firefox) or is
-        # rejected (WebKit), and the paste event already carries the clipboard.
-        (
-            'function ft({isChromium:e,clipboardSync:t,sendClipboardData:n,canSync:r,canRead:i,canWrite:a,binaryEnabled:o,getSendInFlight:s,getDeferredWriteInFlight:c}){',
-            'function ft({isChromium:e,clipboardSync:t,sendClipboardData:n,canSync:r,canRead:i,canWrite:a,binaryEnabled:o,getSendInFlight:s,getDeferredWriteInFlight:c,readAndSend:__chReadAndSend=null}){'
-            'let __chPasteRead=()=>{if(!e||!__chReadAndSend||!r()||!i()||s())return;'
-            'let ae=document.activeElement;'
-            'if(ae&&ae.id!==`overlayInput`&&(ae.tagName===`INPUT`||ae.tagName===`TEXTAREA`||ae.tagName===`SELECT`||ae.isContentEditable))return;'
-            'try{let p=__chReadAndSend();p&&p.catch&&p.catch(()=>{})}catch(_){}};'
-        ),
-        # 3. Read the local clipboard on the Ctrl/Cmd+V keydown, inside the user gesture.
-        # Inserted after the handler's `let` so it can't hit those bindings' TDZ, and
-        # before the hold check, which then sees the new send in flight and holds the V
-        # until what it pastes has reached the session.
-        (
-            'if(e.code!==`KeyV`&&!t)return;let n=(e.ctrlKey||e.metaKey)&&!e.altKey,r=c?c():null;',
-            'if(e.code!==`KeyV`&&!t)return;let n=(e.ctrlKey||e.metaKey)&&!e.altKey,r=c?c():null;if(e.type===`keydown`&&e.code===`KeyV`&&n&&!e.repeat)__chPasteRead();'
-        ),
-        # 4. Unconditionally listen for paste events in g()
-        (
-            'function g(){window.addEventListener(`keydown`,h,!0),window.addEventListener(`keyup`,h,!0),e||(window.addEventListener(`keydown`,ee,!0),window.addEventListener(`paste`,te,!0))}',
-            'function g(){window.addEventListener(`keydown`,h,!0),window.addEventListener(`keyup`,h,!0),(e||window.addEventListener(`keydown`,ee,!0)),window.addEventListener(`paste`,te,!0)}'
-        ),
-        # 5. Unconditionally remove paste listener in ne()
-        (
-            'function ne(){window.removeEventListener(`keydown`,h,!0),window.removeEventListener(`keyup`,h,!0),e||(window.removeEventListener(`keydown`,ee,!0),window.removeEventListener(`paste`,te,!0))}',
-            'function ne(){window.removeEventListener(`keydown`,h,!0),window.removeEventListener(`keyup`,h,!0),(e||window.removeEventListener(`keydown`,ee,!0)),window.removeEventListener(`paste`,te,!0)}'
-        ),
-        # 6. Pass readAndSend in WebRTC ft initialization
-        (
-            'getDeferredWriteInFlight:()=>z.getInFlight()});async function yr()',
-            'getDeferredWriteInFlight:()=>z.getInFlight(),readAndSend:()=>hr.readAndSend()});async function yr()'
-        ),
-        # 7. Pass readAndSend in WebSocket ft initialization
-        (
-            'getDeferredWriteInFlight:()=>vn.getInFlight()}).wire();let b=()=>{',
-            'getDeferredWriteInFlight:()=>vn.getInFlight(),readAndSend:()=>On.readAndSend()}).wire();let b=()=>{'
-        ),
-    ]
-
     applied = 0
     for old, new in replacements:
-        # Checked first: a replacement that only appends (patch 3) still contains
-        # its pattern, so it would otherwise be applied a second time
+        # Checked first: a replacement that only appends still contains its
+        # pattern, so it would otherwise be applied a second time
         if new in code:
             print(f"Notice: replacement already applied: {old[:40]}...")
             applied += 1
@@ -100,6 +160,17 @@ def find_targets():
 
     return candidates
 
+def find_server_targets():
+    candidates = []
+    for root_dir in ["/lsiopy", "/usr/lib", "/usr/local/lib"]:
+        if os.path.isdir(root_dir):
+            for root, dirs, files in os.walk(root_dir):
+                if os.path.basename(root) == "selkies" and "input_handler.py" in files:
+                    candidates.append(os.path.join(root, "input_handler.py"))
+            if candidates:
+                break
+    return candidates
+
 if __name__ == "__main__":
     targets = find_targets()
     if not targets:
@@ -109,4 +180,14 @@ if __name__ == "__main__":
     print(f"Found {len(targets)} target file(s): {targets}")
     for t in targets:
         if not patch_file(t):
+            sys.exit(1)
+
+    server_targets = find_server_targets()
+    if not server_targets:
+        print("No selkies/input_handler.py found in search roots.")
+        sys.exit(1)
+
+    print(f"Found {len(server_targets)} server file(s): {server_targets}")
+    for t in server_targets:
+        if not patch_file(t, SERVER_REPLACEMENTS):
             sys.exit(1)

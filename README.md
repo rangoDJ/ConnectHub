@@ -21,7 +21,7 @@ A high-performance, low-latency WebRTC remote desktop container that connects to
   - FreeRDP drive redirection mounts the container's `/shared` directory as `\\tsclient\SharedFolder` in Windows.
   - Integrated **WebUI File Manager drawer** for drag-and-drop file uploads and instant downloads from the remote Windows machine.
 - 🔊 **Audio Playback**: FreeRDP sound redirection (`/sound:sys:pulse`) routed through PulseAudio and WebRTC directly to your browser.
-- 📋 **Clipboard Synchronization**: Bidirectional text and clipboard sync between local browser and Windows, with an on-screen clipboard helper.
+- 📋 **Clipboard Synchronization**: Bidirectional text and clipboard sync between local browser and Windows, including pasting images into RDP sessions, with an on-screen clipboard helper.
 - 🎮 **In-Stream Floating Toolbar**:
   - One-click **Disconnect** (terminates RDP session cleanly and returns to the dashboard).
   - Special key injection: **Ctrl + Alt + Del**, **Windows Key (⊞)**, and **Alt + Tab**.
@@ -236,6 +236,20 @@ File sharing between your client browser and the remote Windows machine is bidir
 
 ---
 
+## Copying and Pasting Images
+
+Images can be pasted into an **RDP** session from Chrome, Edge or Brave. VNC and SSH sessions carry text only, since the TigerVNC viewer and xterm have no image clipboard.
+
+1. Open the WebUI over **HTTPS** (`https://<your-server-ip>:8443`). Browsers only let a page read the clipboard over HTTPS.
+2. Copy an image locally, click into the stream and press **Ctrl+V**. The first time, the browser asks to let the page see your clipboard. Choose **Allow**.
+3. Keep **Clipboard** enabled in the connection profile (it is on by default).
+
+Over plain HTTP (port 8080) a paste still sends the image, but the keystroke can reach Windows before the image does, so the first Ctrl+V may paste the previous clipboard.
+
+Images reach Windows as bitmaps: Ubuntu's FreeRDP build can't convert PNG itself, so the gateway adds a BMP copy of every pasted image. Transparent areas become white.
+
+---
+
 ## Windows Machine Setup
 
 To connect to a Windows machine:
@@ -287,6 +301,8 @@ ConnectHub/
   Check the **Connection Logs & Diagnostics** accordion on the dashboard. It displays live output from `xfreerdp3`. Common reasons include incorrect Windows credentials or Remote Desktop not being enabled on the target PC.
 - **Audio not playing**:
   Ensure the **🔊 Audio Playback** toggle is enabled before connecting, and that your browser allows autoplay on the gateway URL.
+- **Pasting an image does nothing**:
+  Use the HTTPS address (port 8443) and an RDP session. If you once blocked clipboard access, re-allow it from the site settings (the icon left of the address bar), then reload the page. A group policy on the Windows machine can also turn off clipboard redirection (**Do not allow Clipboard redirection** under Remote Desktop Session Host → Device and Resource Redirection).
 - **Ctrl + Alt + Del**:
   Click the **Ctrl+Alt+Del** button on the floating stream toolbar. It sends the key sequence (`Ctrl+Alt+End`) recognized by FreeRDP to trigger the Windows security screen without triggering your local host's task manager.
 

@@ -2,3 +2,5 @@
 #   pip install -r root/app/backend/requirements.txt -r requirements-dev.txt
 #   pytest
 pytest>=8.0.0
+# The Selkies server patch is tested against Pillow, which Selkies itself uses
+pillow>=10.0.0

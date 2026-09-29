@@ -70,8 +70,13 @@ globalThis.window = {
     addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
     removeEventListener() {},
     dispatchEvent(ev) { for (const fn of listeners[ev.type] || []) { fn(ev); if (ev._stopped) break; } },
+    isSecureContext: H.secure,
 };
 globalThis.document = { activeElement: H.activeElement };
+// Node has its own read-only navigator; the clipboard-read permission state is the test's
+Object.defineProperty(globalThis, "navigator", { configurable: true, value: {
+    permissions: { query: async () => ({ state: H.permission }) },
+} });
 globalThis.KeyboardEvent = class {
     constructor(type, init = {}) {
         this.type = type;
@@ -97,14 +102,15 @@ const reached = [];
 G.wire();
 window.addEventListener("keydown", ev => reached.push(ev.code)); // the input stack
 const result = { error: null };
-try {
-    window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyV", ctrlKey: true }));
-} catch (e) {
-    result.error = `${e.name}: ${e.message}`;
-}
-result.reads = reads;
-result.reachedWhileSending = reached.slice();
 (async () => {
+    await new Promise(r => setTimeout(r, 0)); // the permission query has answered
+    try {
+        window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyV", ctrlKey: true }));
+    } catch (e) {
+        result.error = `${e.name}: ${e.message}`;
+    }
+    result.reads = reads;
+    result.reachedWhileSending = reached.slice();
     if (settle) settle();
     for (let i = 0; i < 10; i++) await new Promise(r => setTimeout(r, 0));
     result.reachedAfterSend = reached.slice();
@@ -127,10 +133,15 @@ def patched(tmp_path) -> str:
     return target.read_text(encoding="utf-8")
 
 
-def run(code: str, is_chromium=True, active_element=None):
+def run(code: str, is_chromium=True, active_element=None, secure=True, permission="granted"):
     if not shutil.which("node"):
         pytest.skip("node not installed")
-    hooks = {"isChromium": is_chromium, "activeElement": active_element or {"id": "overlayInput", "tagName": "TEXTAREA"}}
+    hooks = {
+        "isChromium": is_chromium,
+        "activeElement": active_element or {"id": "overlayInput", "tagName": "TEXTAREA"},
+        "secure": secure,
+        "permission": permission,
+    }
     source = f"const H = {json.dumps(hooks)};\n{PRELUDE}\n{code}\n{DRIVER}"
     out = subprocess.run(["node", "-e", source], capture_output=True, text=True, timeout=30)
     assert out.returncode == 0, out.stderr
@@ -183,3 +194,106 @@ def test_no_read_while_typing_in_a_page_form_field(tmp_path):
     result = run(patched(tmp_path), active_element={"id": "settings-name", "tagName": "INPUT"})
     assert result["error"] is None
     assert result["reads"] == 0
+
+
+def test_no_keydown_read_without_https(tmp_path):
+    """Without navigator.clipboard the read fails, and the hold it starts would cancel
+    the keydown and so the paste event, the one path that carries the image there."""
+    result = run(patched(tmp_path), secure=False)
+    assert result["error"] is None
+    assert result["reads"] == 0
+    assert result["reachedWhileSending"] == ["KeyV"]
+
+
+def test_no_keydown_read_when_clipboard_read_is_denied(tmp_path):
+    result = run(patched(tmp_path), permission="denied")
+    assert result["error"] is None
+    assert result["reads"] == 0
+    assert result["reachedWhileSending"] == ["KeyV"]
+
+
+def test_first_use_still_reads_so_chromium_can_ask(tmp_path):
+    result = run(patched(tmp_path), permission="prompt")
+    assert result["reads"] == 1
+
+
+# ----------------- Server: a BMP beside pasted images -----------------
+
+# The parts of Selkies 2.0.0's input_handler.py the server patches touch, verbatim
+SERVER_MODULE = '''import asyncio
+import io
+import logging
+from PIL import Image
+
+logger_webrtc_input = logging.getLogger("input")
+
+
+class Handler:
+    async def write_clipboard(self, data, mime_type="text/plain", flavours=None):
+        input_bytes = data if isinstance(data, bytes) else data.encode('utf-8')
+        # `data`/`mime_type` stay the flavour the session reads back and echoes
+        # against; `flavours` is everything the copy carried, offered together.
+        entries = [(m, d if isinstance(d, bytes) else d.encode('utf-8'))
+                   for m, d in (flavours or [(mime_type, input_bytes)])]
+
+        return entries
+'''
+
+
+@pytest.fixture
+def server(tmp_path):
+    pytest.importorskip("PIL")
+    target = tmp_path / "input_handler.py"
+    target.write_text(SERVER_MODULE, encoding="utf-8")
+    assert patch_selkies.patch_file(str(target), patch_selkies.SERVER_REPLACEMENTS)
+    spec = importlib.util.spec_from_file_location("patched_input_handler", target)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def write(server, data, mime_type):
+    import asyncio
+    return asyncio.run(server.Handler().write_clipboard(data, mime_type))
+
+
+def png(pixels):
+    import io
+    from PIL import Image
+    im = Image.new("RGBA", (len(pixels), 1))
+    im.putdata(pixels)
+    out = io.BytesIO()
+    im.save(out, "PNG")
+    return out.getvalue()
+
+
+def test_a_pasted_png_is_offered_as_bmp_too(server):
+    import io
+    from PIL import Image
+    data = png([(255, 0, 0, 255), (0, 0, 0, 0)])
+    entries = write(server, data, "image/png")
+    assert [m for m, _ in entries] == ["image/png", "image/bmp"]
+    assert entries[0][1] == data  # the original is still offered first, unchanged
+    bmp = entries[1][1]
+    assert bmp[:2] == b"BM"
+    with Image.open(io.BytesIO(bmp)) as im:
+        assert im.mode == "RGB" and im.size == (2, 1)
+        # opaque pixels kept; transparent ones flattened onto white, not black
+        assert [im.getpixel((x, 0)) for x in range(2)] == [(255, 0, 0), (255, 255, 255)]
+
+
+def test_text_gets_no_bmp(server):
+    assert [m for m, _ in write(server, "hello", "text/plain")] == ["text/plain"]
+
+
+def test_an_undecodable_image_is_offered_as_it_came(server):
+    assert [m for m, _ in write(server, b"not an image", "image/png")] == ["image/png"]
+
+
+def test_patching_the_server_twice_is_a_no_op(tmp_path):
+    target = tmp_path / "input_handler.py"
+    target.write_text(SERVER_MODULE, encoding="utf-8")
+    assert patch_selkies.patch_file(str(target), patch_selkies.SERVER_REPLACEMENTS)
+    once = target.read_text(encoding="utf-8")
+    assert patch_selkies.patch_file(str(target), patch_selkies.SERVER_REPLACEMENTS)
+    assert target.read_text(encoding="utf-8") == once
