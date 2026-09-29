@@ -1,4 +1,6 @@
 """Command building and the window-detection watchdog."""
+import io
+
 import pytest
 
 import session_manager as sm
@@ -306,6 +308,37 @@ def test_disconnect_while_waiting_cancels_the_launch(mgr, monkeypatch):
     assert not result["success"]
     assert launched == []
     assert mgr.status == "disconnected"
+
+
+class ExitedProc:
+    """A client that has exited, whose monitor thread hasn't finished cleaning up yet."""
+    pid = 4343
+    def __init__(self):
+        self.stdout = io.StringIO("")
+    def poll(self):
+        return 0
+    def wait(self):
+        return 0
+
+
+def test_previous_sessions_cleanup_leaves_a_new_connect_alone(mgr, monkeypatch):
+    """The old session's monitor can finish while the new connect waits on the display;
+    it must not reset the new attempt's status to disconnected and its protocol to None."""
+    old = ExitedProc()
+    mgr.process = old
+    mgr.protocol = "rdp"
+    old_launch = sm.Launch(cmd=[], target="old:3389")
+    finish_old = mgr._monitor_process
+    monkeypatch.setattr(mgr, "_wait_for_display_to_settle",
+                        lambda: finish_old(old, old_launch, "rdp"))
+    monkeypatch.setattr(mgr, "_watch_connected", lambda proc, launch: None)
+    monkeypatch.setattr(mgr, "_monitor_process", lambda proc, launch, protocol: None)
+    monkeypatch.setattr(sm.subprocess, "Popen", lambda *a, **k: FakeProc())
+    result = mgr.connect({"protocol": "vnc", "host": "10.0.0.5"})
+    assert result["success"]
+    assert mgr.status == "connecting"
+    assert mgr.protocol == "vnc"
+    assert mgr.current_target == "10.0.0.5:5900"
 
 
 def test_second_connect_while_one_is_starting_is_refused(mgr, monkeypatch):
