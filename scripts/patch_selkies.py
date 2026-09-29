@@ -14,15 +14,26 @@ def patch_file(filepath):
             'catch(e){if(e&&e.name===`DataError`)return t();throw e}',
             'catch(e){if(e&&(e.name===`DataError`||e.name===`NotAllowedError`))return t();throw e}'
         ),
-        # 2. Add readAndSend parameter to ft
+        # 2. Add a readAndSend parameter to ft (createClipboardGestures), and a gate for it.
+        # The gate has to live here at ft's top level: inside the key handler the names
+        # r and i are the handler's own locals (writeInFlight, hold), not canSync/canRead.
+        # Chromium only -- elsewhere a keydown read raises a paste prompt (Firefox) or is
+        # rejected (WebKit), and the paste event already carries the clipboard.
         (
             'function ft({isChromium:e,clipboardSync:t,sendClipboardData:n,canSync:r,canRead:i,canWrite:a,binaryEnabled:o,getSendInFlight:s,getDeferredWriteInFlight:c}){',
-            'function ft({isChromium:e,clipboardSync:t,sendClipboardData:n,canSync:r,canRead:i,canWrite:a,binaryEnabled:o,getSendInFlight:s,getDeferredWriteInFlight:c,readAndSend:R=null}){'
+            'function ft({isChromium:e,clipboardSync:t,sendClipboardData:n,canSync:r,canRead:i,canWrite:a,binaryEnabled:o,getSendInFlight:s,getDeferredWriteInFlight:c,readAndSend:__chReadAndSend=null}){'
+            'let __chPasteRead=()=>{if(!e||!__chReadAndSend||!r()||!i()||s())return;'
+            'let ae=document.activeElement;'
+            'if(ae&&ae.id!==`overlayInput`&&(ae.tagName===`INPUT`||ae.tagName===`TEXTAREA`||ae.tagName===`SELECT`||ae.isContentEditable))return;'
+            'try{let p=__chReadAndSend();p&&p.catch&&p.catch(()=>{})}catch(_){}};'
         ),
-        # 3. Trigger read on KeyV keydown during user gesture
+        # 3. Read the local clipboard on the Ctrl/Cmd+V keydown, inside the user gesture.
+        # Inserted after the handler's `let` so it can't hit those bindings' TDZ, and
+        # before the hold check, which then sees the new send in flight and holds the V
+        # until what it pastes has reached the session.
         (
             'if(e.code!==`KeyV`&&!t)return;let n=(e.ctrlKey||e.metaKey)&&!e.altKey,r=c?c():null;',
-            'if(e.code!==`KeyV`&&!t)return;let n=(e.ctrlKey||e.metaKey)&&!e.altKey;if(e.type===`keydown`&&e.code===`KeyV`&&n&&!l()&&r()&&i()&&!s()&&R)try{R()}catch{}let r=c?c():null;'
+            'if(e.code!==`KeyV`&&!t)return;let n=(e.ctrlKey||e.metaKey)&&!e.altKey,r=c?c():null;if(e.type===`keydown`&&e.code===`KeyV`&&n&&!e.repeat)__chPasteRead();'
         ),
         # 4. Unconditionally listen for paste events in g()
         (
@@ -48,11 +59,13 @@ def patch_file(filepath):
 
     applied = 0
     for old, new in replacements:
-        if old in code:
-            code = code.replace(old, new, 1)
-            applied += 1
-        elif new in code:
+        # Checked first: a replacement that only appends (patch 3) still contains
+        # its pattern, so it would otherwise be applied a second time
+        if new in code:
             print(f"Notice: replacement already applied: {old[:40]}...")
+            applied += 1
+        elif old in code:
+            code = code.replace(old, new, 1)
             applied += 1
         else:
             print(f"Warning: pattern not found: {old[:60]}...")
