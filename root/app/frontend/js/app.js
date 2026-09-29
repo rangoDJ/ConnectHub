@@ -3,6 +3,8 @@ let currentStatus = "disconnected";
 // True while a connect request is open; a status poll answered before the server saw the
 // request would otherwise report "disconnected" and unload the stream we just started
 let connectInFlight = false;
+// Bumped on every connect, so a poll that was already in flight when it began is discarded
+let connectGeneration = 0;
 let isStreamView = false;
 let statusPollTimer = null;
 let savedProfiles = [];
@@ -334,6 +336,7 @@ async function handleConnect(profileId = null) {
     const wasLoaded = isStreamLoaded();
     currentStatus = "connecting";
     connectInFlight = true;
+    connectGeneration++;
     switchView(true);
     if (wasLoaded) reloadIframe(); // rebind an already-open stream to the new session
 
@@ -391,10 +394,13 @@ function startStatusPolling() {
 
 async function pollStatus() {
     if (connectInFlight) return;
+    const generation = connectGeneration;
     try {
         const res = await apiFetch("/api/session/status");
         if (!res.ok) return;
         const data = await res.json();
+        // Answered from before a connect started: its "disconnected" would unload the new stream
+        if (connectInFlight || generation !== connectGeneration) return;
         const previousStatus = currentStatus;
         updateStatusBadge(data.status, data.target, data.protocol);
         // Ctrl+Alt+Del / Win / Alt+Tab only make sense for graphical desktops
