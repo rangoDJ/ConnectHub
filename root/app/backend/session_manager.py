@@ -472,6 +472,9 @@ class SessionManager:
                 return {"success": False, "message": "A session is already starting"}
             if not config.get("host"):
                 return {"success": False, "message": "Host IP or hostname is required"}
+            # The previous client has exited but its monitor may not have cleaned up yet.
+            # Detach it so that cleanup sees it was replaced and leaves this attempt alone.
+            self.process = None
             # Report "connecting" straight away: the dashboard unloads the stream while the
             # status says disconnected, and the stream is what sizes the display we wait on
             attempt = object()
