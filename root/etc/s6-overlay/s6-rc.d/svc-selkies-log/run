@@ -1,0 +1,11 @@
+#!/command/with-contenv bash
+
+# Receives Selkies' output (svc-selkies/producer-for). s6-log passes every line on to the
+# container log as before (the "1" action) and keeps a timestamped, rotated copy that
+# the dashboard's Connection Logs panel reads.
+LOG_DIR=/var/log/connecthub/selkies
+
+mkdir -p "${LOG_DIR}"
+lsiown -R abc:abc /var/log/connecthub
+
+exec s6-setuidgid abc s6-log 1 T n3 s1000000 "${LOG_DIR}"

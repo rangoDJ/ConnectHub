@@ -40,6 +40,7 @@ from auth import (
     clear_state_cookie
 )
 from session_manager import session_manager
+from log_buffer import BufferLogHandler, FileTail, LogBuffer
 from file_manager import (
     list_files,
     save_uploaded_file,
@@ -50,6 +51,35 @@ from file_manager import (
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("server")
+
+# Requests the dashboard repeats every couple of seconds; logging each one buried
+# everything else in `docker logs`
+QUIET_REQUEST_PATHS = ("/api/session/status", "/api/logs/")
+
+
+class QuietPollingFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        # uvicorn's access log args: (client, method, path, http_version, status)
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 3:
+            path = str(args[2]).split("?", 1)[0]
+            return not any(path == p or (p.endswith("/") and path.startswith(p)) for p in QUIET_REQUEST_PATHS)
+        return True
+
+
+logging.getLogger("uvicorn.access").addFilter(QuietPollingFilter())
+
+# The ConnectHub tab of the Connection Logs panel: this server's own log.
+# uvicorn's loggers don't propagate to the root logger, so its errors are added separately.
+server_log = LogBuffer()
+_server_log_handler = BufferLogHandler(server_log, "[%(asctime)s] [%(levelname)s][%(name)s] %(message)s")
+for _name in ("", "uvicorn.error"):
+    logging.getLogger(_name).addHandler(_server_log_handler)
+
+# The Selkies tab: svc-selkies-log runs Selkies' output through s6-log into this file
+SELKIES_LOG_FILE = os.environ.get("SELKIES_LOG_FILE", "/var/log/connecthub/selkies/current")
+selkies_log = LogBuffer()
+selkies_tail = FileTail(SELKIES_LOG_FILE, selkies_log)
 
 # Baked into the image by CI (Dockerfile APP_VERSION); "dev" when run from source
 APP_VERSION = os.environ.get("CONNECTHUB_VERSION", "dev")
@@ -413,6 +443,22 @@ def disconnect_session(user: dict = Depends(get_current_user)):
 @app.get("/api/session/status")
 def session_status(user: dict = Depends(get_current_user)):
     return session_manager.get_status()
+
+@app.get("/api/logs/{source}")
+def get_logs(source: str, cursor: Optional[int] = None, user: dict = Depends(get_current_user)):
+    """Log lines added since `cursor` (the value returned by the previous call)."""
+    if source == "session":
+        return session_manager.log.since(cursor)
+    if source == "server":
+        return server_log.since(cursor)
+    if source == "selkies":
+        found = selkies_tail.poll()
+        result = selkies_log.since(cursor)
+        if not found:
+            result["unavailable"] = f"No Selkies log at {SELKIES_LOG_FILE}"
+        return result
+    raise HTTPException(status_code=404, detail="Unknown log source")
+
 
 @app.post("/api/session/send-keys")
 def session_send_keys(req: KeyActionRequest, user: dict = Depends(get_current_user)):

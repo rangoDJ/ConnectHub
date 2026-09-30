@@ -197,7 +197,9 @@ function setupEventListeners() {
     // Logs accordion toggle
     logsToggle.addEventListener("click", () => {
         logsBody.classList.toggle("hidden");
+        pollLogs();
     });
+    setupLogTabs();
 
     // Drawers
     btnOpenFiles.addEventListener("click", () => {
@@ -390,6 +392,7 @@ function startStatusPolling() {
     if (statusPollTimer) clearInterval(statusPollTimer);
     pollStatus();
     statusPollTimer = setInterval(pollStatus, 2000);
+    startLogPolling();
 }
 
 async function pollStatus() {
@@ -407,11 +410,6 @@ async function pollStatus() {
         document.querySelectorAll("[data-keys-group]").forEach(el => {
             el.classList.toggle("hidden", data.protocol === "ssh");
         });
-
-        // Update logs
-        if (data.recent_logs && data.recent_logs.length > 0) {
-            renderLogs(data.recent_logs);
-        }
 
         // Show/hide view toggle button based on whether connected
         if (data.status === "connected" || data.status === "connecting") {
@@ -432,34 +430,119 @@ async function pollStatus() {
 
 // ----------------- Connection Logs panel -----------------
 
-let renderedLogs = [];
+// Keep in step with log_buffer.DEFAULT_MAX_LINES
+const MAX_LOG_LINES = 1000;
+const LOG_EMPTY_TEXT = {
+    session: "No session log yet. It fills in when you connect.",
+    server: "No ConnectHub log lines yet.",
+    selkies: "No Selkies log lines yet.",
+};
+
+let logSource = "session";
+let logCursor = null;
+let logLineCount = 0;
+// Bumped on every tab switch, so a reply for the previous tab is thrown away
+let logGeneration = 0;
+let logPollInFlight = null;
+let logPollTimer = null;
 
 function logLineClass(line) {
     const classes = ["log-line"];
     if (line.includes("[connecthub]")) classes.push("log-connecthub");
-    if (/\[(ERROR|FATAL)\]/.test(line)) classes.push("log-error");
-    else if (/\[WARN(ING)?\]/.test(line)) classes.push("log-warn");
+    // FreeRDP and ConnectHub write [ERROR] / [WARN]; Selkies (Python logging) writes ERROR: / WARNING:
+    if (/\[(ERROR|FATAL)\]|\b(ERROR|CRITICAL):/.test(line)) classes.push("log-error");
+    else if (/\[WARN(ING)?\]|\bWARNING:/.test(line)) classes.push("log-warn");
     return classes.join(" ");
 }
 
-function renderLogs(lines) {
-    if (lines.length === renderedLogs.length && lines.every((l, i) => l === renderedLogs[i])) return;
-    // The server clears the log on every connect, so a different first line means a new session
-    const newSession = lines[0] !== renderedLogs[0];
+function logLineElement(line) {
+    const el = document.createElement("div");
+    el.className = logLineClass(line);
+    el.textContent = line;
+    return el;
+}
+
+function setupLogTabs() {
+    document.querySelectorAll(".logs-tab").forEach(tab => {
+        tab.addEventListener("click", e => {
+            e.stopPropagation(); // the header's own click collapses the panel
+            logsBody.classList.remove("hidden");
+            selectLogSource(tab.dataset.logSource);
+        });
+    });
+}
+
+function selectLogSource(source) {
+    if (source !== logSource) {
+        logSource = source;
+        logCursor = null;
+        logGeneration++;
+        document.querySelectorAll(".logs-tab").forEach(tab => {
+            const active = tab.dataset.logSource === source;
+            tab.classList.toggle("active", active);
+            tab.setAttribute("aria-selected", String(active));
+        });
+    }
+    pollLogs();
+}
+
+function startLogPolling() {
+    if (logPollTimer) clearInterval(logPollTimer);
+    pollLogs();
+    logPollTimer = setInterval(pollLogs, 2000);
+}
+
+async function pollLogs() {
+    const generation = logGeneration;
+    // Nothing to show while collapsed; expanding the panel polls straight away
+    if (logsBody.classList.contains("hidden") || logPollInFlight === generation) return;
+    logPollInFlight = generation;
+    const source = logSource;
+    try {
+        const query = logCursor === null ? "" : `?cursor=${logCursor}`;
+        const res = await apiFetch(`/api/logs/${source}${query}`);
+        if (!res.ok || generation !== logGeneration) return;
+        const data = await res.json();
+        if (generation !== logGeneration) return;
+        logCursor = data.cursor;
+        renderLogs(data, source);
+    } catch (e) {
+        // Silent poll fail
+    } finally {
+        if (logPollInFlight === generation) logPollInFlight = null;
+    }
+}
+
+// Adds what the server returned since the last poll; `reset` replaces the panel's contents
+// (first read, a new session, or a server restart)
+function renderLogs({ lines, reset, unavailable }, source) {
+    if (!reset && lines.length === 0) return;
     // Follow new lines only once the user has scrolled to the bottom of an overflowing log;
     // jumping there as soon as it fills would hide the session's first lines
     const overflowing = logsBody.scrollHeight > logsBody.clientHeight;
     const atBottom = overflowing && logsBody.scrollHeight - logsBody.scrollTop - logsBody.clientHeight < 24;
 
-    logsContent.replaceChildren(...lines.map(line => {
+    if (reset) {
+        logsContent.replaceChildren();
+        logLineCount = 0;
+    } else {
+        logsContent.querySelector(".log-placeholder")?.remove();
+    }
+    logsContent.append(...lines.map(logLineElement));
+    logLineCount += lines.length;
+    while (logLineCount > MAX_LOG_LINES) {
+        logsContent.firstElementChild.remove();
+        logLineCount--;
+    }
+    if (logLineCount === 0) {
         const el = document.createElement("div");
-        el.className = logLineClass(line);
-        el.textContent = line;
-        return el;
-    }));
-    renderedLogs = lines;
+        el.className = "log-line log-placeholder";
+        el.textContent = unavailable || LOG_EMPTY_TEXT[source];
+        logsContent.replaceChildren(el);
+    }
 
-    if (newSession) logsBody.scrollTop = 0;
+    // A session reads best from its first line; the long-running logs from their newest
+    if (reset) logsBody.scrollTop = source === "session" ? 0 : logsBody.scrollHeight;
     else if (atBottom) logsBody.scrollTop = logsBody.scrollHeight;
 }
 
