@@ -4,6 +4,7 @@ import io
 import pytest
 
 import session_manager as sm
+from log_buffer import LogBuffer
 
 
 @pytest.fixture
@@ -13,12 +14,10 @@ def mgr(monkeypatch):
     manager.protocol = None
     manager.status = "disconnected"
     manager.last_error = None
-    manager.log_history = []
-    manager.max_logs = 100
+    manager.log = LogBuffer()
     manager.current_target = None
     manager.start_time = None
     manager.lock = sm.threading.Lock()
-    manager._log_lock = sm.threading.Lock()
     manager._user_disconnected = set()
     manager._pending_connect = None
     manager.rdp_binary = "xfreerdp"
@@ -138,16 +137,16 @@ def test_missing_host_is_refused(mgr):
 # ----------------- Log ring buffer -----------------
 
 def test_log_history_is_capped(mgr):
-    mgr.max_logs = 10
+    mgr.log.max_lines = 10
     for i in range(50):
-        mgr._append_log(f"line {i}")
-    assert len(mgr.log_history) == 10
-    assert mgr.log_history[-1] == "line 49"
+        mgr.log.append(f"line {i}")
+    assert len(mgr.log.lines()) == 10
+    assert mgr.log.lines()[-1] == "line 49"
 
 
 def test_blank_log_lines_are_dropped(mgr):
-    mgr._append_log("   \n")
-    assert mgr.log_history == []
+    mgr.log.append("   \n")
+    assert mgr.log.lines() == []
 
 
 # ----------------- Window watchdog -----------------
@@ -356,7 +355,7 @@ def test_second_connect_while_one_is_starting_is_refused(mgr, monkeypatch):
 @pytest.fixture
 def panel(mgr):
     """Route session_manager's log messages into mgr's panel log for the test."""
-    handler = sm.PanelLogHandler(mgr)
+    handler = sm.BufferLogHandler(mgr.log, sm.PANEL_LOG_FORMAT)
     sm.logger.addHandler(handler)
     previous = sm.logger.level
     sm.logger.setLevel(sm.logging.INFO)
@@ -367,8 +366,8 @@ def panel(mgr):
 
 def test_connecthub_messages_reach_the_panel(panel):
     sm.logger.info("Display settled at (2880, 1472); starting the session")
-    assert len(panel.log_history) == 1
-    line = panel.log_history[0]
+    assert len(panel.log.lines()) == 1
+    line = panel.log.lines()[0]
     assert "[INFO][connecthub]" in line
     assert "Display settled" in line
 
@@ -385,25 +384,35 @@ def test_logging_while_holding_the_session_lock_does_not_deadlock(panel):
     t = sm.threading.Thread(target=log_under_lock, daemon=True)
     t.start()
     assert done.wait(2), "deadlocked appending a log line under the session lock"
-    assert "logged while locked" in panel.log_history[-1]
+    assert "logged while locked" in panel.log.lines()[-1]
 
 
 def test_connect_messages_survive_the_log_reset(panel, monkeypatch):
     """The log is cleared at the start of each connect; its own messages come after that."""
-    panel._append_log("line from the previous session")
+    panel.log.append("line from the previous session")
     monkeypatch.setattr(panel, "_wait_for_display_to_settle", lambda: sm.logger.info("Display settled"))
     monkeypatch.setattr(sm.subprocess, "Popen", lambda *a, **k: (_ for _ in ()).throw(OSError("no client")))
     panel.connect({"protocol": "vnc", "host": "10.0.0.5"})
-    text = "\n".join(panel.log_history)
+    text = "\n".join(panel.log.lines())
     assert "previous session" not in text
     assert "Display settled" in text
     assert "Starting VNC session to 10.0.0.5:5900" in text
     assert "Failed to launch VNC client" in text
 
 
-def test_status_returns_the_whole_log_not_just_the_tail(mgr):
-    for i in range(60):
-        mgr._append_log(f"line {i}")
-    logs = mgr.get_status()["recent_logs"]
-    assert len(logs) == 60
-    assert logs[0] == "line 0"
+def test_status_no_longer_carries_the_log(mgr):
+    """The panel reads the log from /api/logs/session, so the status poll stays small."""
+    mgr.log.append("line")
+    assert "recent_logs" not in mgr.get_status()
+
+
+def test_clipboard_debug_adds_freerdp_log_filters(mgr, monkeypatch):
+    monkeypatch.setenv("CLIPBOARD_DEBUG", "true")
+    args = mgr._build_rdp({"host": "10.0.0.5", "port": 3389}).stdin_text.splitlines()
+    assert f"/log-filters:{sm.CLIPBOARD_LOG_FILTERS}" in args
+
+
+def test_clipboard_debug_is_off_by_default(mgr, monkeypatch):
+    monkeypatch.delenv("CLIPBOARD_DEBUG", raising=False)
+    args = mgr._build_rdp({"host": "10.0.0.5", "port": 3389}).stdin_text
+    assert "/log-filters" not in args

@@ -297,8 +297,20 @@ ConnectHub/
 
 ## Troubleshooting
 
+The **Connection Logs & Diagnostics** panel on the dashboard has three tabs, each keeping its last 1,000 lines:
+
+| Tab | Shows |
+|---|---|
+| **Session** | Output of the running client (`xfreerdp3`, the VNC viewer or SSH) and ConnectHub's messages about it. Cleared on each connect. |
+| **ConnectHub** | The WebUI server's own log: logins, sign-ups, OIDC and profile errors. |
+| **Selkies** | The streaming server: encoder, display resizes, audio and clipboard. |
+
+Everything also goes to `docker logs connecthub`. The dashboard's status and log requests, which repeat every 2 seconds, are left out of it.
+
+Set `CLIPBOARD_DEBUG=true` on the container to log clipboard transfers in detail: FreeRDP's clipboard channel in the **Session** tab (from the next connect) and Selkies' debug log in the **Selkies** tab (after a restart). Selkies' debug log is verbose, so turn it off again when you're done.
+
 - **Black screen after clicking Connect**:
-  Check the **Connection Logs & Diagnostics** accordion on the dashboard. It displays live output from `xfreerdp3`. Common reasons include incorrect Windows credentials or Remote Desktop not being enabled on the target PC.
+  Check the **Session** tab of the **Connection Logs & Diagnostics** panel. Common reasons include incorrect Windows credentials or Remote Desktop not being enabled on the target PC.
 - **Audio not playing**:
   Ensure the **🔊 Audio Playback** toggle is enabled before connecting, and that your browser allows autoplay on the gateway URL.
 - **Pasting an image does nothing**:

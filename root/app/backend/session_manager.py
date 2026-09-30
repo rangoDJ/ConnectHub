@@ -8,6 +8,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, List, Tuple
 
+from log_buffer import BufferLogHandler, LogBuffer
+
 logger = logging.getLogger("session_manager")
 
 SHARED_DIR = os.environ.get("SHARED_DIR", "/shared")
@@ -17,6 +19,8 @@ PROTOCOL_NAMES = {"rdp": "RDP", "vnc": "VNC", "ssh": "SSH"}
 # WM_CLASS values given to client windows so we can detect when a session is actually up
 RDP_WM_CLASS = "connecthub"
 SSH_WM_CLASS = "ConnectHubTerm"
+# FreeRDP's clipboard channel and its X11 side, logged at debug level with CLIPBOARD_DEBUG=true
+CLIPBOARD_LOG_FILTERS = "com.freerdp.channels.cliprdr.client:DEBUG,com.freerdp.client.x11.cliprdr:DEBUG"
 # Log fragments that mean an RDP connection failed even if FreeRDP exits cleanly
 RDP_ERROR_MARKERS = ("ERRCONNECT", "Authentication only, exit status", "LOGON_FAILURE")
 
@@ -82,20 +86,12 @@ class ConfigError(Exception):
     pass
 
 
-class PanelLogHandler(logging.Handler):
-    """Copies this module's log messages into the session log shown in the dashboard's
-    Connection Logs panel, next to the client's own output."""
+def clipboard_debug_enabled() -> bool:
+    return os.environ.get("CLIPBOARD_DEBUG", "").strip().lower() == "true"
 
-    def __init__(self, manager: "SessionManager"):
-        super().__init__(logging.INFO)
-        self.manager = manager
-        self.setFormatter(logging.Formatter("[%(asctime)s] [%(levelname)s][connecthub] %(message)s", "%H:%M:%S"))
 
-    def emit(self, record: logging.LogRecord):
-        try:
-            self.manager._append_log(self.format(record))
-        except Exception:
-            self.handleError(record)
+# This module's messages go into the session log next to the client's own output
+PANEL_LOG_FORMAT = "[%(asctime)s] [%(levelname)s][connecthub] %(message)s"
 
 
 class SessionManager:
@@ -104,19 +100,17 @@ class SessionManager:
         self.protocol: Optional[str] = None
         self.status: str = "disconnected" # disconnected, connecting, connected, error
         self.last_error: Optional[str] = None
-        self.log_history: List[str] = []
-        self.max_logs: int = 100
+        # The Session tab of the dashboard's Connection Logs panel
+        self.log = LogBuffer()
         self.current_target: Optional[str] = None
         self.start_time: Optional[float] = None
         self.lock = threading.Lock()
-        # Separate from self.lock: messages are logged (and so appended) while self.lock is held
-        self._log_lock = threading.Lock()
         self._user_disconnected: set = set()
         # Token of a connect() waiting for the display to settle; cleared to cancel it
         self._pending_connect: Optional[object] = None
         self.rdp_binary = "xfreerdp"
         self.supports_args_from = False
-        logger.addHandler(PanelLogHandler(self))
+        logger.addHandler(BufferLogHandler(self.log, PANEL_LOG_FORMAT))
         self._find_xfreerdp_binary()
 
     def _find_xfreerdp_binary(self):
@@ -138,23 +132,6 @@ class SessionManager:
         env = os.environ.copy()
         env["DISPLAY"] = os.environ.get("DISPLAY", ":1")
         return env
-
-    def _append_log(self, line: str):
-        line = line.strip()
-        if not line:
-            return
-        with self._log_lock:
-            self.log_history.append(line)
-            if len(self.log_history) > self.max_logs:
-                self.log_history.pop(0)
-
-    def _clear_log(self):
-        with self._log_lock:
-            self.log_history.clear()
-
-    def _log_snapshot(self) -> List[str]:
-        with self._log_lock:
-            return list(self.log_history)
 
     # ----------------- Command builders -----------------
 
@@ -183,6 +160,8 @@ class SessionManager:
         # Bidirectional Clipboard Synchronization
         if config.get("enable_clipboard", True):
             args.append("+clipboard")
+            if clipboard_debug_enabled():
+                args.append(f"/log-filters:{CLIPBOARD_LOG_FILTERS}")
 
         # Drive Redirection: mount container shared folder as RDP SharedFolder
         if config.get("enable_drive", True):
@@ -397,7 +376,7 @@ class SessionManager:
         error_line = None
         last_line = None
         for line in iter(proc.stdout.readline, ''):
-            self._append_log(line)
+            self.log.append(line)
             if line.strip():
                 last_line = line.strip()
             if protocol == "rdp" and any(marker in line for marker in RDP_ERROR_MARKERS):
@@ -479,7 +458,7 @@ class SessionManager:
             # status says disconnected, and the stream is what sizes the display we wait on
             attempt = object()
             self._pending_connect = attempt
-            self._clear_log()
+            self.log.clear()
             self.last_error = None
             self.protocol = protocol
             self.current_target = f"{config['host']}:{config['port']}"
@@ -570,8 +549,6 @@ class SessionManager:
                 "target": self.current_target,
                 "uptime_seconds": uptime,
                 "last_error": self.last_error,
-                # The whole session log (capped at max_logs), not just the tail
-                "recent_logs": self._log_snapshot()
             }
 
     def send_keys(self, key_combination: str) -> Dict[str, Any]:

@@ -26,6 +26,11 @@ services:
       # Force CPU encoding even when a GPU is available
       # - SELKIES_USE_CPU=true
 
+      # ================= Troubleshooting =================
+      # Log clipboard transfers (FreeRDP and Selkies) in the dashboard's Connection Logs.
+      # Selkies' debug log is verbose; leave this off otherwise.
+      # - CLIPBOARD_DEBUG=true
+
       # ================= Authentication Configuration =================
       # Options: none, basic, oidc, forward_auth
       - AUTH_MODE=${AUTH_MODE:-none}
