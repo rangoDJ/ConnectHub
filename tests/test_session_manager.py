@@ -17,6 +17,7 @@ def mgr(monkeypatch):
     manager.log = LogBuffer()
     manager.current_target = None
     manager.start_time = None
+    manager.last_seen = sm.time.monotonic()
     manager.lock = sm.threading.Lock()
     manager._user_disconnected = set()
     manager._pending_connect = None
@@ -416,3 +417,93 @@ def test_clipboard_debug_is_off_by_default(mgr, monkeypatch):
     monkeypatch.delenv("CLIPBOARD_DEBUG", raising=False)
     args = mgr._build_rdp({"host": "10.0.0.5", "port": 3389}).stdin_text
     assert "/log-filters" not in args
+
+
+# ----------------- Idle disconnect -----------------
+
+@pytest.mark.parametrize("value, seconds", [
+    (None, 0), ("", 0), ("0", 0), ("-5", 0), ("soon", 0), ("15", 900), (" 1 ", 60),
+])
+def test_idle_disconnect_setting(monkeypatch, value, seconds):
+    if value is None:
+        monkeypatch.delenv("IDLE_DISCONNECT_MINUTES", raising=False)
+    else:
+        monkeypatch.setenv("IDLE_DISCONNECT_MINUTES", value)
+    assert sm.idle_disconnect_seconds() == seconds
+
+
+class RunningProc:
+    """A client that runs until it is terminated."""
+    pid = 4444
+    def __init__(self):
+        self.terminated = False
+    def poll(self):
+        return 0 if self.terminated else None
+    def terminate(self):
+        self.terminated = True
+    def wait(self, timeout=None):
+        return 0
+
+
+@pytest.fixture
+def idle_clock(monkeypatch):
+    """time.monotonic() that only moves when the code sleeps."""
+    now = [5000.0]
+    monkeypatch.setattr(sm.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(sm.time, "sleep", lambda s: now.__setitem__(0, now[0] + s))
+    return now
+
+
+def test_session_is_disconnected_once_no_dashboard_polls(panel, idle_clock):
+    proc = RunningProc()
+    panel.process = proc
+    panel.status = "connected"
+    panel.mark_seen()
+    panel._watch_idle(proc, 600)
+    assert proc.terminated
+    assert panel.status == "disconnected"
+    assert "IDLE_DISCONNECT_MINUTES" in panel.log.lines()[-2]
+    assert idle_clock[0] - 5000.0 == pytest.approx(600, abs=sm.IDLE_CHECK_SECONDS)
+
+
+def test_an_open_dashboard_keeps_the_session(mgr, idle_clock, monkeypatch):
+    proc = RunningProc()
+    mgr.process = proc
+    checks = []
+
+    def sleep(s):
+        idle_clock[0] += s
+        mgr.mark_seen()  # the dashboard polls throughout
+        checks.append(s)
+        if len(checks) == 200:  # well past the limit; the user then disconnects
+            proc.terminate()
+
+    monkeypatch.setattr(sm.time, "sleep", sleep)
+    mgr._watch_idle(proc, 600)
+    assert len(checks) == 200
+    assert mgr.process is proc  # never disconnected by the watcher
+
+
+def test_idle_watcher_leaves_a_newer_session_alone(mgr, idle_clock):
+    old, new = RunningProc(), RunningProc()
+    mgr.process = new
+    mgr.last_seen = idle_clock[0] - 10_000
+    mgr._watch_idle(old, 600)
+    assert not new.terminated
+
+
+def test_connect_starts_the_idle_watcher_only_when_enabled(mgr, monkeypatch):
+    started = []
+    monkeypatch.setattr(mgr, "_wait_for_display_to_settle", lambda: None)
+    monkeypatch.setattr(mgr, "_watch_connected", lambda proc, launch: None)
+    monkeypatch.setattr(mgr, "_monitor_process", lambda proc, launch, protocol: None)
+    monkeypatch.setattr(mgr, "_watch_idle", lambda proc, limit: started.append(limit))
+    monkeypatch.setattr(sm.subprocess, "Popen", lambda *a, **k: FakeProc())
+
+    monkeypatch.delenv("IDLE_DISCONNECT_MINUTES", raising=False)
+    mgr.connect({"protocol": "vnc", "host": "10.0.0.5"})
+    mgr.process = None
+    monkeypatch.setenv("IDLE_DISCONNECT_MINUTES", "20")
+    mgr.connect({"protocol": "vnc", "host": "10.0.0.5"})
+    sm.time.sleep(0.05)  # the watcher runs on its own thread
+    assert started == [1200]

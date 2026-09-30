@@ -26,6 +26,11 @@ services:
       # Force CPU encoding even when a GPU is available
       # - SELKIES_USE_CPU=true
 
+      # ================= Sessions =================
+      # Disconnect the session when no dashboard has been open for this many minutes
+      # (closed tab, sleeping laptop). Unset or 0 keeps sessions running until disconnected.
+      # - IDLE_DISCONNECT_MINUTES=15
+
       # ================= Troubleshooting =================
       # Log clipboard transfers (FreeRDP and Selkies) in the dashboard's Connection Logs.
       # Selkies' debug log is verbose; leave this off otherwise.
