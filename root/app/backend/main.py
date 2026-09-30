@@ -442,6 +442,8 @@ def disconnect_session(user: dict = Depends(get_current_user)):
 
 @app.get("/api/session/status")
 def session_status(user: dict = Depends(get_current_user)):
+    # The dashboard polls this while it is open, which IDLE_DISCONNECT_MINUTES relies on
+    session_manager.mark_seen()
     return session_manager.get_status()
 
 @app.get("/api/logs/{source}")

@@ -217,6 +217,16 @@ Pick the protocol at the top of the connection form. Each session runs fullscree
 
 Passwords and SSH keys are stored in `/config/profiles.json` (readable only by the container user) and are never passed on a command line. SSH keys and VNC password files are written to a private temporary directory for the length of the session and deleted afterwards.
 
+### Disconnecting idle sessions
+
+A session runs inside the container, not the browser, so closing the tab leaves it running: Windows stays logged in, and a Windows PC can't be used locally while it is. Set `IDLE_DISCONNECT_MINUTES` to end the session once no dashboard has been open for that long:
+
+```yaml
+IDLE_DISCONNECT_MINUTES=15
+```
+
+An open dashboard (either view, even in a background tab) keeps the session alive. Closing every tab, or the computer going to sleep, starts the countdown, and the **Session** log notes the disconnect. Unset or `0` (the default) keeps sessions running until you disconnect.
+
 ---
 
 ## How File Sharing Works

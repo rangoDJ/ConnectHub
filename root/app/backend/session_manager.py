@@ -30,6 +30,9 @@ RDP_ERROR_MARKERS = ("ERRCONNECT", "Authentication only, exit status", "LOGON_FA
 WINDOW_WAIT_SECONDS = 20
 XDOTOOL_MISSING_FALLBACK_SECONDS = 3
 
+# How often a running session checks whether any dashboard is still open
+IDLE_CHECK_SECONDS = 15
+
 # Selkies resizes the display when the browser's stream client connects. A client started
 # before that sees the resize in the middle of its handshake, and FreeRDP drops a resize it
 # can't send yet, leaving the remote desktop stuck at its starting size. So the client is
@@ -90,6 +93,19 @@ def clipboard_debug_enabled() -> bool:
     return os.environ.get("CLIPBOARD_DEBUG", "").strip().lower() == "true"
 
 
+def idle_disconnect_seconds() -> int:
+    """IDLE_DISCONNECT_MINUTES as seconds; 0 (off) when unset, zero or invalid."""
+    raw = os.environ.get("IDLE_DISCONNECT_MINUTES", "").strip()
+    if not raw:
+        return 0
+    try:
+        minutes = int(raw)
+    except ValueError:
+        logger.warning(f"Ignoring IDLE_DISCONNECT_MINUTES={raw!r}: not a whole number of minutes")
+        return 0
+    return max(minutes, 0) * 60
+
+
 # This module's messages go into the session log next to the client's own output
 PANEL_LOG_FORMAT = "[%(asctime)s] [%(levelname)s][connecthub] %(message)s"
 
@@ -104,6 +120,8 @@ class SessionManager:
         self.log = LogBuffer()
         self.current_target: Optional[str] = None
         self.start_time: Optional[float] = None
+        # When a dashboard last asked for the status (time.monotonic()); see mark_seen
+        self.last_seen: float = time.monotonic()
         self.lock = threading.Lock()
         self._user_disconnected: set = set()
         # Token of a connect() waiting for the display to settle; cleared to cancel it
@@ -464,6 +482,7 @@ class SessionManager:
             self.current_target = f"{config['host']}:{config['port']}"
             self.start_time = None
             self.status = "connecting"
+            self.last_seen = time.monotonic()
 
         # Outside the lock, so status polling and disconnect still work while we wait
         self._wait_for_display_to_settle()
@@ -513,10 +532,39 @@ class SessionManager:
             self.process = proc
             threading.Thread(target=self._monitor_process, args=(proc, launch, protocol), daemon=True).start()
             threading.Thread(target=self._watch_connected, args=(proc, launch), daemon=True).start()
+            idle_limit = idle_disconnect_seconds()
+            if idle_limit:
+                threading.Thread(target=self._watch_idle, args=(proc, idle_limit), daemon=True).start()
             return {"success": True, "message": f"Connecting to {launch.target} ({name})..."}
 
-    def disconnect(self) -> Dict[str, Any]:
+    def mark_seen(self):
+        """A dashboard is open: it polls the status every couple of seconds while it is."""
+        self.last_seen = time.monotonic()
+
+    def _watch_idle(self, proc: subprocess.Popen, limit: int):
+        """Disconnect the session once no dashboard has polled for `limit` seconds.
+
+        The session runs in the container whatever the browser does, so a closed tab
+        otherwise leaves Windows logged in, holding the machine's only session.
+        """
+        while proc.poll() is None:
+            time.sleep(min(IDLE_CHECK_SECONDS, limit))
+            with self.lock:
+                if self.process is not proc:
+                    return
+            if time.monotonic() - self.last_seen >= limit:
+                logger.warning(
+                    f"No dashboard has been open for {limit // 60} min "
+                    "(IDLE_DISCONNECT_MINUTES); disconnecting the session"
+                )
+                self.disconnect(only=proc)
+                return
+
+    def disconnect(self, only: Optional[subprocess.Popen] = None) -> Dict[str, Any]:
+        """End the session. With `only`, do nothing unless that client is still the session."""
         with self.lock:
+            if only is not None and self.process is not only:
+                return {"success": True, "message": "No active session"}
             self._pending_connect = None  # cancels a connect still waiting on the display
             proc = self.process
             if not proc or proc.poll() is not None:
