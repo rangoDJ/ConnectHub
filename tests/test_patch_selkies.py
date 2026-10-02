@@ -217,13 +217,22 @@ def test_first_use_still_reads_so_chromium_can_ask(tmp_path):
     assert result["reads"] == 1
 
 
-# ----------------- Server: a BMP beside pasted images -----------------
+# ----------------- Server -----------------
 
 # The parts of Selkies 2.0.0's input_handler.py the server patches touch, verbatim
+# (_X11ClipboardMonitor.read is the real method; the rest of that class is stubbed)
 SERVER_MODULE = '''import asyncio
 import io
+import json
 import logging
+import time
 from PIL import Image
+
+CLIPBOARD_FLAVOURS_MIME = "application/x-selkies-clipboard-flavours"
+
+
+def clipboard_envelope(entries):
+    return json.dumps({m: d.decode() for m, d in entries}).encode()
 
 logger_webrtc_input = logging.getLogger("input")
 
@@ -237,6 +246,77 @@ class Handler:
                    for m, d in (flavours or [(mime_type, input_bytes)])]
 
         return entries
+
+
+class _X11ClipboardMonitor:
+    def __init__(self, offered):
+        # The X selection's targets, named by their mime instead of atoms
+        self.offered = offered
+        self._targets = "TARGETS"
+        self._image_targets = [(m, m) for m in (
+            'image/png', 'image/jpeg', 'image/bmp', 'image/webp', 'image/svg+xml',
+            'image/svg')]
+        self._html_atom = 'text/html'
+        self._text_targets = [(t, t) for t in (
+            'UTF8_STRING', 'text/plain;charset=utf-8', 'STRING')]
+        self._uri_list_atom = 'text/uri-list'
+
+    def _convert_and_wait(self, atom):
+        if atom == self._targets:
+            return list(self.offered), 32
+        return (self.offered[atom], 8) if atom in self.offered else None
+
+    def read(self, use_binary: bool) -> tuple:
+        """Blocking read (call via executor): (data, mime) like read_clipboard —
+        text as str with mime 'text/plain', markup with the text beneath it as
+        one envelope under CLIPBOARD_FLAVOURS_MIME, images as bytes with their
+        mime.
+
+        Images come first where the caller takes them, since a copied picture
+        offers markup of its own (an `img` tag pointing back at a page) that is
+        worth less than the picture; a text selection carries no image target,
+        so its markup wins over the plain text beneath it.
+        """
+        reply = self._convert_and_wait(self._targets)
+        if not reply or reply[1] != 32:
+            # A fresh owner (xclip mid-fork) may not serve requests for a moment
+            # after the owner-change event; one short retry covers it.
+            time.sleep(0.1)
+            reply = self._convert_and_wait(self._targets)
+            if not reply or reply[1] != 32:
+                return None, None
+        offered = set(reply[0])
+        if use_binary:
+            for atom, mime in self._image_targets:
+                if atom in offered:
+                    got = self._convert_and_wait(atom)
+                    if got and got[0]:
+                        return bytes(got[0]), mime
+            if self._uri_list_atom in offered:
+                got = self._convert_and_wait(self._uri_list_atom)
+                if got and got[0]:
+                    resolved = self._resolve_uri_list_image(bytes(got[0]))
+                    if resolved is not None:
+                        return resolved
+        if self._html_atom in offered:
+            got = self._convert_and_wait(self._html_atom)
+            if got is not None and got[0]:
+                html = bytes(got[0])
+                plain = b''
+                for atom, _name in self._text_targets:
+                    if atom in offered:
+                        beside = self._convert_and_wait(atom)
+                        if beside is not None and beside[0]:
+                            plain = bytes(beside[0])
+                            break
+                entries = [("text/html", html)] + ([("text/plain", plain)] if plain else [])
+                return clipboard_envelope(entries), CLIPBOARD_FLAVOURS_MIME
+        for atom, _name in self._text_targets:
+            if atom in offered:
+                got = self._convert_and_wait(atom)
+                if got is not None and got[0] is not None:
+                    return bytes(got[0]).decode('utf-8', errors='replace'), 'text/plain'
+        return None, None
 '''
 
 
@@ -297,3 +377,38 @@ def test_patching_the_server_twice_is_a_no_op(tmp_path):
     once = target.read_text(encoding="utf-8")
     assert patch_selkies.patch_file(str(target), patch_selkies.SERVER_REPLACEMENTS)
     assert target.read_text(encoding="utf-8") == once
+
+
+# ----------------- Server: copies with text go as text -----------------
+
+def read(server, offered, use_binary=True):
+    return server._X11ClipboardMonitor(offered).read(use_binary)
+
+
+def test_an_excel_copy_goes_as_its_text_and_markup_not_a_picture(server):
+    """Excel offers a picture of the cells beside their text and HTML."""
+    data, mime = read(server, {
+        "image/png": b"\x89PNG...", "image/bmp": b"BM...",
+        "text/html": b"<table><tr><td>1</td><td>2</td></tr></table>",
+        "UTF8_STRING": b"1\t2\r\n",
+    })
+    assert mime == server.CLIPBOARD_FLAVOURS_MIME
+    assert json.loads(data) == {"text/html": "<table><tr><td>1</td><td>2</td></tr></table>",
+                                "text/plain": "1\t2\r\n"}
+
+
+def test_plain_text_beside_a_picture_goes_as_text(server):
+    assert read(server, {"image/bmp": b"BM...", "UTF8_STRING": b"cell"}) == ("cell", "text/plain")
+
+
+def test_a_picture_only_copy_still_goes_as_an_image(server):
+    """A screenshot or "Copy image": no text, so the picture is the copy."""
+    assert read(server, {"image/png": b"PNGDATA", "text/html": b"<img src=x>"}) == (b"PNGDATA", "image/png")
+
+
+def test_blank_text_beside_a_picture_does_not_count(server):
+    assert read(server, {"image/png": b"PNGDATA", "UTF8_STRING": b" \r\n"}) == (b"PNGDATA", "image/png")
+
+
+def test_text_only_copies_are_unchanged(server):
+    assert read(server, {"UTF8_STRING": b"hello"}) == ("hello", "text/plain")
