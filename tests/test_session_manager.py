@@ -58,9 +58,16 @@ def test_rdp_target_and_optional_flags(mgr):
     args = launch.stdin_text
     assert "/v:pc.local:3390" in args
     assert "/sound" not in args
-    assert "+clipboard" not in args
+    assert "clipboard" not in args
     assert "/drive" not in args
     assert "/cert:ignore" not in args
+
+
+def test_rdp_clipboard_leaves_files_out(mgr):
+    """Copied files need a FUSE mount the container lacks; offering them froze the session."""
+    args = mgr._build_rdp({"host": "pc.local", "port": 3389}).stdin_text.splitlines()
+    assert "/clipboard:files-to:off" in args
+    assert "+clipboard" not in args
 
 
 def test_rdp_resolution_modes(mgr):

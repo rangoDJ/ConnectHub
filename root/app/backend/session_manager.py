@@ -177,7 +177,10 @@ class SessionManager:
 
         # Bidirectional Clipboard Synchronization
         if config.get("enable_clipboard", True):
-            args.append("+clipboard")
+            # Text and images only. FreeRDP can hand copied files to Linux apps only
+            # through a FUSE mount, and the container has no /dev/fuse; with files on,
+            # copying a file in Windows Explorer froze the session.
+            args.append("/clipboard:files-to:off")
             if clipboard_debug_enabled():
                 args.append(f"/log-filters:{CLIPBOARD_LOG_FILTERS}")
 
