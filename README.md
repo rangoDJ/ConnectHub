@@ -54,7 +54,7 @@ flowchart TD
         end
 
         subgraph FreeRDPClient["FreeRDP 3 (xfreerdp)"]
-            RDPProcess["xfreerdp /v:host /sound /clipboard /drive:SharedFolder,/shared"]
+            RDPProcess["xfreerdp /v:host /sound /clipboard:files-to:off /drive:SharedFolder,/shared"]
         end
     end
 
@@ -257,6 +257,8 @@ Images can be pasted into an **RDP** session from Chrome, Edge or Brave. VNC and
 Over plain HTTP (port 8080) a paste still sends the image, but the keystroke can reach Windows before the image does, so the first Ctrl+V may paste the previous clipboard.
 
 Images reach Windows as bitmaps: Ubuntu's FreeRDP build can't convert PNG itself, so the gateway adds a BMP copy of every pasted image. Transparent areas become white.
+
+Files can't be copied through the clipboard: a browser has no way to put a file on your local clipboard, so FreeRDP's file clipboard is turned off. Move files through the shared folder instead (`\\tsclient\SharedFolder` in Windows, **Shared Files** in the WebUI; see [How File Sharing Works](#how-file-sharing-works)).
 
 ---
 
