@@ -108,6 +108,27 @@ SERVER_REPLACEMENTS = [
         '            return []\n'
         '    return []\n'
     ),
+    # 3. Send a copy that carries real text as its text and markup, not as a picture.
+    # Excel, Word and other Office apps offer a picture of the selection beside its
+    # text and HTML, and Selkies takes any offered image first, so copied cells reached
+    # the browser as a PNG that pastes nowhere text is expected. A picture-only copy
+    # (a screenshot, "Copy image") offers no text and still goes as an image.
+    (
+        "        offered = set(reply[0])\n"
+        "        if use_binary:\n"
+        "            for atom, mime in self._image_targets:\n",
+        "        offered = set(reply[0])\n"
+        "        # ConnectHub: with real text beside the image, the text is what was copied\n"
+        "        if use_binary and any(atom in offered for atom, _mime in self._image_targets):\n"
+        "            for atom, _name in self._text_targets:\n"
+        "                if atom in offered:\n"
+        "                    got = self._convert_and_wait(atom)\n"
+        "                    if got is not None and got[0] and bytes(got[0]).strip():\n"
+        "                        use_binary = False\n"
+        "                    break\n"
+        "        if use_binary:\n"
+        "            for atom, mime in self._image_targets:\n"
+    ),
 ]
 
 
