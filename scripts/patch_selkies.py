@@ -55,6 +55,23 @@ CLIENT_REPLACEMENTS = [
         'getDeferredWriteInFlight:()=>vn.getInFlight()}).wire();let b=()=>{',
         'getDeferredWriteInFlight:()=>vn.getInFlight(),readAndSend:()=>On.readAndSend()}).wire();let b=()=>{'
     ),
+    # 8. Send a local copy that carries real text as text, not as its picture. Office
+    # apps add a picture of the selection beside its text, which Chromium exposes as
+    # image/png, and the client took any image first: cells copied in a local Excel
+    # pasted into the session as a picture. A picture-only copy still goes as an image.
+    # (The server patch for read() does the same in the other direction.)
+    (
+        'let r=n[0],i=r.types.find(e=>e.startsWith(`image/`));try{if(i)return{kind:`image`,blob:await r.getType(i),mime:i};',
+        'let r=n[0],i=r.types.find(e=>e.startsWith(`image/`));try{'
+        'if(i&&r.types.includes(`text/plain`)&&(await(await r.getType(`text/plain`)).text()).trim())i=void 0;'
+        'if(i)return{kind:`image`,blob:await r.getType(i),mime:i};'
+    ),
+    # 9. The same for the paste event, whose data offers the picture as a file
+    (
+        'function te(e){if(!r()||!i()||l())return;let t=e.clipboardData;if(!t)return;if(o()&&t.items)for(',
+        'function te(e){if(!r()||!i()||l())return;let t=e.clipboardData;if(!t)return;'
+        'if(o()&&t.items&&!(t.getData(`text/plain`)||``).trim())for('
+    ),
 ]
 
 # The Selkies server (selkies/input_handler.py, Selkies 2.0.0)
@@ -128,6 +145,58 @@ SERVER_REPLACEMENTS = [
         "                    break\n"
         "        if use_binary:\n"
         "            for atom, mime in self._image_targets:\n"
+    ),
+    # 4. Don't let a browser hand the session's own copy back over it. A copy with
+    # markup (Excel cells, Word or web text) reaches the browser as markup plus text,
+    # and the browser later reads its clipboard back and sends it as a new copy: on
+    # every window focus in Chromium, and on Ctrl+V with the read patched in above.
+    # The client can't tell it's an echo, as it fingerprints the text it received but
+    # the markup-and-text bundle it sends. Written to the session, the browser's
+    # sanitized markup replaced the copying app's own formats -- Excel pasted values
+    # instead of cells and formulas -- and cancelled the copy in that app.
+    (
+        "        input_bytes = data if isinstance(data, bytes) else data.encode('utf-8')\n"
+        "        self._clipboard_last_bytes = input_bytes\n",
+        "        input_bytes = data if isinstance(data, bytes) else data.encode('utf-8')\n"
+        "        # ConnectHub: the session already holds this copy (see _connecthub_same_text)\n"
+        "        if _connecthub_same_text(self._clipboard_last_bytes, mime_type, input_bytes, flavours):\n"
+        "            logger_webrtc_input.debug(\"ConnectHub: incoming clipboard matches the session's; keeping the session's\")\n"
+        "            return True\n"
+        "        self._clipboard_last_bytes = input_bytes\n"
+    ),
+    # 5. The comparison, beside the envelope helpers it uses
+    (
+        "\n# Re-reads the outbound monitor gives one selection-change edge whose read came\n",
+        "\n"
+        "\n"
+        "def _connecthub_same_text(last_bytes, mime_type, data, flavours):\n"
+        '    """ConnectHub: whether a copy coming in from a browser carries the same plain\n'
+        "    text as the session clipboard already holds (`last_bytes`, as last read from\n"
+        '    or written to the session). Images are never matched: browsers re-encode them."""\n'
+        "    def plain(entries):\n"
+        '        return next((d for m, d in entries if m == "text/plain"), None)\n'
+        "\n"
+        "    def norm(text):\n"
+        '        return text.replace(b"\\r\\n", b"\\n").rstrip()\n'
+        "\n"
+        "    if flavours:\n"
+        "        incoming = plain(flavours)\n"
+        '    elif mime_type == "text/plain":\n'
+        "        incoming = data\n"
+        "    else:\n"
+        "        return False\n"
+        "    current = last_bytes\n"
+        '    if current and current[:1] == b"{":\n'
+        "        try:\n"
+        "            current = plain(clipboard_flavours(current))\n"
+        "        except (ValueError, UnicodeDecodeError):\n"
+        "            pass  # plain text that happens to start with a brace\n"
+        "    if not incoming or not current or not norm(incoming):\n"
+        "        return False\n"
+        "    return norm(incoming) == norm(current)\n"
+        "\n"
+        "\n"
+        "# Re-reads the outbound monitor gives one selection-change edge whose read came\n"
     ),
 ]
 

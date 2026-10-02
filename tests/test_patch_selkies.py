@@ -22,9 +22,8 @@ _spec.loader.exec_module(patch_selkies)
 # The key handler's locals: t=modHold, n=chord, r=writeInFlight, i=hold. They shadow
 # ft's canSync (r) and canRead (i).
 BUNDLE = (
-    "async function rl(o){let t=async()=>{let e=await navigator.clipboard.readText().catch(()=>``);"
-    "return e?{kind:`text`,text:e}:null};"
-    "try{return await navigator.clipboard.read()}catch(e){if(e&&e.name===`DataError`)return t();throw e}}\n"
+    # The local clipboard read, verbatim
+    "async function rt(e){let t=async()=>{let e=await navigator.clipboard.readText().catch(()=>``);return e?{kind:`text`,text:e}:null};if(!e){let e=await navigator.clipboard.readText();return e?{kind:`text`,text:e}:null}let n;try{n=await navigator.clipboard.read()}catch(e){if(e&&e.name===`DataError`)return t();throw e}if(!n||n.length===0)return null;let r=n[0],i=r.types.find(e=>e.startsWith(`image/`));try{if(i)return{kind:`image`,blob:await r.getType(i),mime:i};if(r.types.includes(`text/html`)){let e=await(await r.getType(`text/html`)).text(),t=r.types.includes(`text/plain`)?await(await r.getType(`text/plain`)).text():``;if(e)return{kind:`flavours`,html:e,text:t}}if(r.types.includes(`text/plain`)){let e=await(await r.getType(`text/plain`)).text();return e?{kind:`text`,text:e}:null}}catch(e){if(e&&e.name===`DataError`)return t();throw e}return null}\n"
 
     "function ft({isChromium:e,clipboardSync:t,sendClipboardData:n,canSync:r,canRead:i,canWrite:a,"
     "binaryEnabled:o,getSendInFlight:s,getDeferredWriteInFlight:c}){"
@@ -45,8 +44,8 @@ BUNDLE = (
     "Promise.race([Promise.all(e).then(()=>`settled`,()=>`failed`),"
     "new Promise(e=>setTimeout(()=>e(`timeout`),a))]).then(e=>{e===`settled`?n():m()})};n()}}"
     "function ee(e){}"
-    "function te(e){if(!r()||!i()||l())return;let a=e.clipboardData;if(!a)return;"
-    "let s=a.getData(`text/plain`);s&&n(s)}"
+    # The paste handler, verbatim
+    "function te(e){if(!r()||!i()||l())return;let t=e.clipboardData;if(!t)return;if(o()&&t.items)for(let e=0;e<t.items.length;e++){let r=t.items[e];if(r.kind===`file`&&r.type&&r.type.startsWith(`image/`)){let e=r.getAsFile();if(e){e.arrayBuffer().then(e=>n(e,r.type)).catch(e=>console.warn(`Paste image read failed: ${e&&e.name}`));return}}}let a=t.getData(`text/plain`);a&&n(a)}"
     "function g(){window.addEventListener(`keydown`,h,!0),window.addEventListener(`keyup`,h,!0),"
     "e||(window.addEventListener(`keydown`,ee,!0),window.addEventListener(`paste`,te,!0))}"
     "function ne(){window.removeEventListener(`keydown`,h,!0),window.removeEventListener(`keyup`,h,!0),"
@@ -232,14 +231,37 @@ CLIPBOARD_FLAVOURS_MIME = "application/x-selkies-clipboard-flavours"
 
 
 def clipboard_envelope(entries):
-    return json.dumps({m: d.decode() for m, d in entries}).encode()
+    return json.dumps({mime: data.decode("utf-8", "replace")
+                       for mime, data in entries}).encode("utf-8")
+
+
+def clipboard_flavours(payload):
+    decoded = json.loads(payload.decode("utf-8"))
+    if not isinstance(decoded, dict) or not decoded:
+        raise ValueError("clipboard flavours must be a non-empty object")
+    entries = [(mime, decoded[mime].encode("utf-8"))
+               for mime in ("text/html", "text/plain")
+               if isinstance(decoded.get(mime), str) and decoded[mime]]
+    if not entries:
+        raise ValueError(f"no usable clipboard flavour in {sorted(decoded)}")
+    return entries
+
+# Re-reads the outbound monitor gives one selection-change edge whose read came
+# back empty, before treating the selection as genuinely empty.
+_CLIPBOARD_REREAD_ATTEMPTS = 2
 
 logger_webrtc_input = logging.getLogger("input")
 
 
 class Handler:
+    _clipboard_last_bytes = None
+
     async def write_clipboard(self, data, mime_type="text/plain", flavours=None):
+        if not data:
+            return True
         input_bytes = data if isinstance(data, bytes) else data.encode('utf-8')
+        self._clipboard_last_bytes = input_bytes
+        self._clipboard_self_write = input_bytes
         # `data`/`mime_type` stay the flavour the session reads back and echoes
         # against; `flavours` is everything the copy carried, offered together.
         entries = [(m, d if isinstance(d, bytes) else d.encode('utf-8'))
@@ -412,3 +434,142 @@ def test_blank_text_beside_a_picture_does_not_count(server):
 
 def test_text_only_copies_are_unchanged(server):
     assert read(server, {"UTF8_STRING": b"hello"}) == ("hello", "text/plain")
+
+
+# ----------------- Server: the browser's echo of the session's own copy -----------------
+
+def receive(server, handler, data, mime_type="text/plain", flavours=None):
+    """A clipboard write from a browser; the written entries, or True if skipped."""
+    import asyncio
+    return asyncio.run(handler.write_clipboard(data, mime_type, flavours))
+
+
+def excel_copy(server):
+    """What the session last sent for copied cells: markup plus text."""
+    return server.clipboard_envelope([("text/html", b"<table><tr><td>1</td><td>2</td></tr></table>"),
+                                      ("text/plain", b"1\t2\r\n")])
+
+
+def test_the_browsers_echo_of_a_rich_copy_is_not_written(server):
+    """Chrome hands the markup back sanitized, so only the text still matches."""
+    handler = server.Handler()
+    handler._clipboard_last_bytes = excel_copy(server)
+    echo = [("text/html", b"<meta charset='utf-8'><table><tr><td>1</td><td>2</td></tr></table>"),
+            ("text/plain", b"1\t2\n")]
+    assert receive(server, handler, echo[0][1], "text/html", echo) is True
+    assert handler._clipboard_last_bytes == excel_copy(server)  # the session's copy stands
+
+
+def test_the_echo_of_plain_text_is_not_written(server):
+    handler = server.Handler()
+    handler._clipboard_last_bytes = b"hello\r\n"
+    assert receive(server, handler, "hello") is True
+
+
+def test_a_new_local_copy_is_written(server):
+    handler = server.Handler()
+    handler._clipboard_last_bytes = excel_copy(server)
+    entries = receive(server, handler, "something else")
+    assert entries == [("text/plain", b"something else")]
+    assert handler._clipboard_last_bytes == b"something else"
+
+
+def test_a_new_rich_local_copy_is_written(server):
+    handler = server.Handler()
+    handler._clipboard_last_bytes = b"old text"
+    flavours = [("text/html", b"<b>new</b>"), ("text/plain", b"new")]
+    entries = receive(server, handler, b"<b>new</b>", "text/html", flavours)
+    assert [m for m, _ in entries] == ["text/html", "text/plain"]
+
+
+def test_images_are_always_written(server):
+    """Browsers re-encode images, so an identical-looking one can't be told apart."""
+    handler = server.Handler()
+    data = png([(0, 0, 0, 255)])
+    handler._clipboard_last_bytes = data
+    assert [m for m, _ in receive(server, handler, data, "image/png")] == ["image/png", "image/bmp"]
+
+
+def test_text_that_starts_with_a_brace_is_compared_as_text(server):
+    handler = server.Handler()
+    handler._clipboard_last_bytes = b'{"a": 1}'
+    assert receive(server, handler, '{"a": 1}') is True
+    assert receive(server, handler, '{"a": 2}') == [("text/plain", b'{"a": 2}')]
+
+
+def test_nothing_is_skipped_before_the_session_has_a_clipboard(server):
+    handler = server.Handler()
+    assert receive(server, handler, "first") == [("text/plain", b"first")]
+
+
+# ----------------- Client: local copies with text go as text -----------------
+
+def run_script(code: str, script: str):
+    """Run the patched bundle, then `script`, which prints one JSON line."""
+    if not shutil.which("node"):
+        pytest.skip("node not installed")
+    hooks = {"isChromium": True, "activeElement": {"id": "overlayInput", "tagName": "TEXTAREA"},
+             "secure": True, "permission": "granted"}
+    source = f"const H = {json.dumps(hooks)};\n{PRELUDE}\n{code}\n(async () => {{\n{script}\n}})();"
+    out = subprocess.run(["node", "-e", source], capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout.strip().splitlines()[-1])
+
+
+def local_read(code, types):
+    """rt(binary) on a local clipboard item offering `types` ({mime: text})."""
+    return run_script(code, f"""
+const types = {json.dumps(types)};
+navigator.clipboard = {{ read: async () => [{{
+    types: Object.keys(types),
+    getType: async t => ({{ text: async () => types[t], size: types[t].length }}),
+}}] }};
+const got = await rt(true);
+console.log(JSON.stringify(got && {{ kind: got.kind, mime: got.mime || null, text: got.text || null }}));
+""")
+
+
+OFFICE_COPY = {"image/png": "PNG", "text/html": "<table><tr><td>1</td></tr></table>", "text/plain": "1\r\n"}
+
+
+def test_a_local_office_copy_is_read_as_markup_not_a_picture(tmp_path):
+    assert local_read(patched(tmp_path), OFFICE_COPY) == {"kind": "flavours", "mime": None, "text": "1\r\n"}
+
+
+def test_original_client_read_an_office_copy_as_a_picture(tmp_path):
+    """The bug patch 8 fixes."""
+    assert local_read(BUNDLE, OFFICE_COPY)["kind"] == "image"
+
+
+def test_a_local_picture_is_still_read_as_an_image(tmp_path):
+    got = local_read(patched(tmp_path), {"image/png": "PNG", "text/html": "<img src=x>"})
+    assert got == {"kind": "image", "mime": "image/png", "text": None}
+
+
+def test_blank_text_beside_a_local_picture_does_not_count(tmp_path):
+    assert local_read(patched(tmp_path), {"image/png": "PNG", "text/plain": " \n"})["kind"] == "image"
+
+
+def paste(code, text):
+    """A paste event carrying a picture file and `text`; what the client sends."""
+    return run_script(code, f"""
+const sent = [];
+const P = ft({{isChromium: !0, clipboardSync: {{}}, sendClipboardData: (d, m) => sent.push(typeof d === "string" ? ["text", d] : ["bytes", m]),
+    canSync: () => !0, canRead: () => !0, canWrite: () => !0, binaryEnabled: () => !0,
+    getSendInFlight: () => null, getDeferredWriteInFlight: () => null}});
+P.wire();
+window.dispatchEvent({{ type: "paste", clipboardData: {{
+    items: [{{ kind: "file", type: "image/png", getAsFile: () => ({{ arrayBuffer: async () => new ArrayBuffer(3) }}) }}],
+    getData: t => t === "text/plain" ? {json.dumps(text)} : "",
+}} }});
+for (let i = 0; i < 5; i++) await new Promise(r => setTimeout(r, 0));
+console.log(JSON.stringify(sent));
+""")
+
+
+def test_a_pasted_office_copy_is_sent_as_text(tmp_path):
+    assert paste(patched(tmp_path), "1\t2") == [["text", "1\t2"]]
+
+
+def test_a_pasted_picture_is_still_sent_as_an_image(tmp_path):
+    assert paste(patched(tmp_path), "") == [["bytes", "image/png"]]
