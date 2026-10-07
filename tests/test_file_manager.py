@@ -145,3 +145,92 @@ def test_create_folder_rejects_a_duplicate(shared):
     with pytest.raises(HTTPException) as exc:
         fm.create_folder("", "docs")
     assert exc.value.status_code == 409
+
+
+# ----------------- Deleting a symlink -----------------
+
+def make_link(link, target, is_dir):
+    try:
+        link.symlink_to(target, target_is_directory=is_dir)
+    except OSError:
+        pytest.skip("this system can't create symlinks")
+
+
+def test_deleting_a_link_to_a_folder_keeps_the_folder(shared):
+    real = shared / "projects"
+    real.mkdir()
+    (real / "keep.txt").write_text("x")
+    make_link(shared / "shortcut", real, True)
+    fm.delete_path("shortcut")
+    assert not (shared / "shortcut").exists() and not (shared / "shortcut").is_symlink()
+    assert (real / "keep.txt").read_text() == "x"
+
+
+def test_deleting_a_link_to_a_file_keeps_the_file(shared):
+    real = shared / "report.txt"
+    real.write_text("x")
+    make_link(shared / "docs-link.txt", real, False)
+    fm.delete_path("docs-link.txt")
+    assert real.read_text() == "x"
+    assert not (shared / "docs-link.txt").is_symlink()
+
+
+def test_a_link_pointing_outside_can_still_be_deleted(shared, tmp_path):
+    """Removing the link touches nothing outside the shared folder."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret").write_text("x")
+    make_link(shared / "escape", outside, True)
+    fm.delete_path("escape")
+    assert (outside / "secret").read_text() == "x"
+    assert not (shared / "escape").is_symlink()
+
+
+def test_a_link_inside_a_subfolder_is_deleted_itself(shared):
+    sub = shared / "sub"
+    sub.mkdir()
+    real = shared / "data"
+    real.mkdir()
+    make_link(sub / "data-link", real, True)
+    fm.delete_path("sub/data-link")
+    assert real.is_dir() and not (sub / "data-link").is_symlink()
+
+
+def test_parent_traversal_is_still_rejected_on_delete():
+    with pytest.raises(HTTPException) as exc:
+        fm.delete_path("../etc")
+    assert exc.value.status_code == 403
+
+
+# ----------------- Uploads -----------------
+
+def upload(name, data=b"hello", path="", overwrite=False):
+    import asyncio
+    import io
+    from fastapi import UploadFile
+    return asyncio.run(fm.save_uploaded_file(UploadFile(io.BytesIO(data), filename=name), path, overwrite))
+
+
+@pytest.mark.parametrize("name", [
+    pytest.param("a" * 250 + ".txt", id="254-chars",  # a valid name on Linux and NTFS
+                 marks=pytest.mark.skipif(os.name == "nt", reason="exceeds Windows' 260-character path limit here")),
+    pytest.param("é" * 110 + ".txt", id="224-bytes"),  # over the old limit in UTF-8 bytes
+])
+def test_a_long_but_valid_name_can_be_uploaded(shared, name):
+    result = upload(name)
+    assert result["filename"] == name
+    assert (shared / name).read_bytes() == b"hello"
+
+
+def test_no_temp_file_is_left_behind(shared):
+    upload("report.txt")
+    assert sorted(p.name for p in shared.iterdir()) == ["report.txt"]
+
+
+def test_an_existing_file_is_only_replaced_with_overwrite(shared):
+    upload("report.txt", b"one")
+    with pytest.raises(HTTPException) as exc:
+        upload("report.txt", b"two")
+    assert exc.value.status_code == 409
+    upload("report.txt", b"two", overwrite=True)
+    assert (shared / "report.txt").read_bytes() == b"two"

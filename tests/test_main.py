@@ -116,6 +116,53 @@ def test_port_defaults_to_none_for_the_protocol_default():
     assert main.ConnectionProfile(host="1.2.3.4").port is None
 
 
+# ----------------- A damaged profiles.json is never overwritten -----------------
+
+@pytest.fixture
+def damaged(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    import auth
+    path = tmp_path / "profiles.json"
+    path.write_text('[{"id": "x", "host": "10.0.0.5"', encoding="utf-8")  # cut off mid-write
+    monkeypatch.setattr(main, "PROFILES_FILE", path)
+    monkeypatch.setattr(main, "AUTH_MODE", "none")
+    monkeypatch.setattr(auth, "AUTH_MODE", "none")
+    return TestClient(main.app), path
+
+
+def test_a_damaged_file_lists_as_no_profiles(damaged):
+    client, _ = damaged
+    assert client.get("/api/profiles").json() == []
+
+
+def test_saving_refuses_to_overwrite_a_damaged_file(damaged):
+    client, path = damaged
+    before = path.read_text(encoding="utf-8")
+    res = client.post("/api/profiles", json={"protocol": "rdp", "host": "10.0.0.9"})
+    assert res.status_code == 500
+    assert path.read_text(encoding="utf-8") == before
+
+
+def test_deleting_refuses_to_overwrite_a_damaged_file(damaged):
+    client, path = damaged
+    before = path.read_text(encoding="utf-8")
+    assert client.delete("/api/profiles/x").status_code == 500
+    assert path.read_text(encoding="utf-8") == before
+
+
+def test_a_file_that_is_not_a_list_counts_as_damaged(damaged):
+    client, path = damaged
+    path.write_text('{"profiles": []}', encoding="utf-8")
+    assert client.post("/api/profiles", json={"protocol": "rdp", "host": "10.0.0.9"}).status_code == 500
+
+
+def test_a_missing_file_is_created_on_save(damaged):
+    client, path = damaged
+    path.unlink()
+    assert client.post("/api/profiles", json={"protocol": "rdp", "host": "10.0.0.9"}).status_code == 200
+    assert [p["host"] for p in main.load_profiles()] == ["10.0.0.9"]
+
+
 # ----------------- Masked secrets stay with their host -----------------
 
 @pytest.fixture

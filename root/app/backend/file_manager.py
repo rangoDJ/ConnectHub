@@ -83,8 +83,10 @@ async def save_uploaded_file(upload_file: UploadFile, relative_path: str = "", o
     if target_file.exists() and not overwrite:
         raise HTTPException(status_code=409, detail=f"{filename} already exists")
 
-    # Write to a temp file first so a failed upload never leaves a truncated file behind
-    tmp_file = target_dir / f".{filename}.{uuid.uuid4().hex}.part"
+    # Write to a temp file first so a failed upload never leaves a truncated file behind.
+    # Its name is fixed-length: built from the upload's name, a long but valid name went
+    # over the filesystem's 255-byte limit.
+    tmp_file = target_dir / f".upload-{uuid.uuid4().hex}.part"
     try:
         async with aiofiles.open(tmp_file, "wb") as f:
             while chunk := await upload_file.read(1024 * 1024): # 1MB chunks
@@ -123,6 +125,15 @@ def get_file_for_download(relative_path: str) -> FileResponse:
     )
 
 def delete_path(relative_path: str) -> Dict[str, Any]:
+    # A symlink is deleted itself, never what it points to: safe_path() resolves links,
+    # which would make deleting a link to a folder empty the real folder
+    clean_rel = Path((relative_path or "").lstrip("/\\"))
+    if clean_rel.name not in ("", ".", ".."):
+        entry = safe_path(clean_rel.parent.as_posix()) / clean_rel.name
+        if entry.is_symlink():
+            entry.unlink()
+            return {"success": True, "message": f"Deleted {entry.name}"}
+
     target = safe_path(relative_path)
     if not target.exists():
         raise HTTPException(status_code=404, detail="File or folder not found")

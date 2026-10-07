@@ -72,6 +72,19 @@ CLIENT_REPLACEMENTS = [
         'function te(e){if(!r()||!i()||l())return;let t=e.clipboardData;if(!t)return;'
         'if(o()&&t.items&&!(t.getData(`text/plain`)||``).trim())for('
     ),
+    # 10. A copy with markup that arrives in chunks. The server splits anything over
+    # 16 KB, and the chunked handler knew only text and images: the markup-and-text
+    # bundle went down the image path, failed to decode as a picture, and nothing
+    # reached the clipboard. Excel's HTML is over 16 KB for even a few cells, so most
+    # Excel copies were lost. Handled here as the single-message path handles it.
+    (
+        'yn.finish().then(({result:n,hash:r,byteLength:i})=>{if(t===`text/plain`){',
+        'yn.finish().then(({result:n,hash:r,byteLength:i})=>{'
+        'if(t===Qe){let a=et(typeof n==`string`?new TextEncoder().encode(n):n),o=Je(i,r),s=_n.shouldSend(o,t);'
+        '_n.resolveServer(a.text||a.html,null,t,o),window.postMessage(ut(a.text||a.html),window.location.origin),'
+        '!e&&W&&s&&Xt&&vn.write(()=>nt(a),{onFailure:e=>console.error(`Could not copy session markup to local: `+e)});return}'
+        'if(t===`text/plain`){'
+    ),
 ]
 
 # The Selkies server (selkies/input_handler.py, Selkies 2.0.0)

@@ -52,6 +52,9 @@ BUNDLE = (
     "e||(window.removeEventListener(`keydown`,ee,!0),window.removeEventListener(`paste`,te,!0))}"
     "return{wire:g,unwire:ne}}\n"
 
+    # The WebSocket handler's end of a chunked clipboard transfer, verbatim
+    "function onClipboardFinish(a){if(a.data===`clipboard_finish`){if(yn.inProgress){if(console.log(`Finished multi-part clipboard download. Received ${yn.receivedSize} of ${yn.totalSize} bytes.`),yn.receivedSize!==yn.totalSize)console.error(`Multipart clipboard size mismatch. Aborting.`),yn.reset();else{let e=Dn(),t=yn.mimeType;yn.finish().then(({result:n,hash:r,byteLength:i})=>{if(t===`text/plain`){let t=n,r=_n.shouldSend(t,`text/plain`);_n.resolveServer(t,null,`text/plain`),!e&&W&&r&&vn.write(()=>navigator.clipboard.writeText(t),{onFailure:e=>console.error(`Could not copy server clipboard text to local: `+e)}),window.postMessage(ut(t),window.location.origin)}else if(W&&hn){let a=new Blob([n],{type:t}),o=Je(i,r),s=_n.shouldSend(o,t);_n.resolveServer(void 0,a,t,o),!e&&s&&vn.write(()=>Ze(a,t,mn),{onSuccess:()=>{console.log(`Successfully wrote multi-part image (${t}) from server to local clipboard.`),_n.captureLocalImageSig();let e=`Image (${t}) received from session and copied to clipboard.`;window.postMessage({type:`clipboardContentUpdate`,text:e},window.location.origin)},onFailure:uo})}}).catch(e=>{console.error(`Error assembling final clipboard content:`,e)})}}}}\n"
+
     # WebRTC call site; the test drives this instance
     "globalThis.G=ft({isChromium:H.isChromium,clipboardSync:{},sendClipboardData:()=>{},"
     "canSync:()=>!0,canRead:()=>!0,canWrite:()=>!0,binaryEnabled:()=>!0,"
@@ -511,7 +514,8 @@ def run_script(code: str, script: str):
     hooks = {"isChromium": True, "activeElement": {"id": "overlayInput", "tagName": "TEXTAREA"},
              "secure": True, "permission": "granted"}
     source = f"const H = {json.dumps(hooks)};\n{PRELUDE}\n{code}\n(async () => {{\n{script}\n}})();"
-    out = subprocess.run(["node", "-e", source], capture_output=True, text=True, timeout=30)
+    # On stdin: a long script overflows the Windows command line
+    out = subprocess.run(["node", "-"], input=source, capture_output=True, text=True, timeout=30)
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout.strip().splitlines()[-1])
 
@@ -573,3 +577,69 @@ def test_a_pasted_office_copy_is_sent_as_text(tmp_path):
 
 def test_a_pasted_picture_is_still_sent_as_an_image(tmp_path):
     assert paste(patched(tmp_path), "") == [["bytes", "image/png"]]
+
+
+# ----------------- Client: chunked copies with markup -----------------
+
+FLAVOURS = "application/x-selkies-clipboard-flavours"
+
+
+def finish_chunked(code, mime, payload):
+    """End a chunked transfer of `payload` (str) as `mime`; what the client writes locally."""
+    return run_script(code, f"""
+const written = [];
+globalThis.Qe = {json.dumps(FLAVOURS)};
+globalThis.et = b => {{ const o = JSON.parse(new TextDecoder().decode(b)); return {{ html: o["text/html"] || "", text: o["text/plain"] || "" }}; }};
+globalThis.nt = f => {{ written.push(["markup", f.html, f.text]); return Promise.resolve(); }};
+globalThis.ut = x => ({{ type: "clipboardContentUpdate", text: x }});
+globalThis.Je = (n, h) => ({{ __clipDigest: true, byteLength: n, hash: h }});
+globalThis._n = {{ shouldSend: () => true, resolveServer() {{}}, captureLocalImageSig() {{}} }};
+vn.write = (fn, cb) => Promise.resolve().then(fn).then(() => cb && cb.onSuccess && cb.onSuccess(), err => cb && cb.onFailure && cb.onFailure(err));  // vn is the prelude's
+globalThis.Ze = (blob, mime) => Promise.reject(new Error("not an image: " + mime));
+globalThis.uo = err => written.push(["failed", String(err.message || err)]);
+globalThis.W = true; globalThis.hn = true; globalThis.Xt = true; globalThis.mn = null;
+globalThis.Dn = () => false;
+window.postMessage = () => {{}};
+globalThis.location = {{ origin: "https://hub" }}; window.location = globalThis.location;
+navigator.clipboard = {{ writeText: async x => written.push(["text", x]) }};
+const payload = new TextEncoder().encode({json.dumps(payload)});
+globalThis.yn = {{ inProgress: true, mimeType: {json.dumps(mime)}, receivedSize: payload.length, totalSize: payload.length,
+    finish: async () => ({{ result: payload.buffer, hash: 1, byteLength: payload.length }}) }};
+onClipboardFinish({{ data: "clipboard_finish" }});
+for (let i = 0; i < 10; i++) await new Promise(r => setTimeout(r, 0));
+console.log(JSON.stringify(written));
+""")
+
+
+EXCEL_HTML = "<table>" + "<tr><td>1</td><td>2</td></tr>" * 2000 + "</table>"  # well over 16 KB
+
+
+def test_a_chunked_rich_copy_reaches_the_local_clipboard(tmp_path):
+    payload = json.dumps({"text/html": EXCEL_HTML, "text/plain": "1\t2\r\n"})
+    assert finish_chunked(patched(tmp_path), FLAVOURS, payload) == [["markup", EXCEL_HTML, "1\t2\r\n"]]
+
+
+def test_original_client_lost_a_chunked_rich_copy(tmp_path):
+    """The bug patch 10 fixes: the bundle went down the image path and failed."""
+    got = finish_chunked(BUNDLE, FLAVOURS, json.dumps({"text/html": EXCEL_HTML, "text/plain": "1"}))
+    assert got and got[0][0] == "failed"
+
+
+def test_chunked_plain_text_is_unchanged(tmp_path):
+    """Plain text arrives as a string from the decoder; the patch leaves that path alone."""
+    code = patched(tmp_path)
+    got = run_script(code, """
+const written = [];
+globalThis.Qe = "application/x-selkies-clipboard-flavours";
+globalThis._n = { shouldSend: () => true, resolveServer() {} };
+vn.write = fn => Promise.resolve().then(fn);
+globalThis.ut = x => x; globalThis.W = true; globalThis.Dn = () => false;
+window.postMessage = () => {}; window.location = { origin: "x" };
+navigator.clipboard = { writeText: async x => written.push(x) };
+globalThis.yn = { inProgress: true, mimeType: "text/plain", receivedSize: 3, totalSize: 3,
+    finish: async () => ({ result: "abc", hash: 1, byteLength: 3 }) };
+onClipboardFinish({ data: "clipboard_finish" });
+for (let i = 0; i < 10; i++) await new Promise(r => setTimeout(r, 0));
+console.log(JSON.stringify(written));
+""")
+    assert got == ["abc"]
