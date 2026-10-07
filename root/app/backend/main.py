@@ -153,14 +153,25 @@ class PasswordChangeRequest(BaseModel):
 # Helper functions for profiles storage
 _profiles_lock = threading.Lock()
 
-def load_profiles() -> List[Dict[str, Any]]:
+def load_profiles(for_update: bool = False) -> List[Dict[str, Any]]:
+    """The saved profiles. A file that can't be read shows as no profiles, but with
+    `for_update` it is an error: writing back the empty list would replace the damaged
+    file and lose every profile in it."""
     if not PROFILES_FILE.exists():
         return []
     try:
         with open(PROFILES_FILE, "r") as f:
-            return json.load(f)
+            profiles = json.load(f)
+        if not isinstance(profiles, list):
+            raise ValueError("expected a list of profiles")
+        return profiles
     except Exception as e:
         logger.error(f"Failed to read profiles: {e}")
+        if for_update:
+            raise HTTPException(
+                status_code=500,
+                detail=f"{PROFILES_FILE} is unreadable; fix or restore it before saving profiles"
+            )
         return []
 
 def save_profiles(profiles: List[Dict[str, Any]]):
@@ -387,7 +398,7 @@ def restore_masked_secrets(data: Dict[str, Any], stored: Optional[Dict[str, Any]
 @app.post("/api/profiles")
 def save_profile(profile: ConnectionProfile, user: dict = Depends(get_current_user)):
     with _profiles_lock:
-        profiles = load_profiles()
+        profiles = load_profiles(for_update=True)
         existing = find_profile(profiles, profile.id)
         for secret in SECRET_FIELDS:
             if getattr(profile, secret) == PASSWORD_MASK:
@@ -405,7 +416,7 @@ def save_profile(profile: ConnectionProfile, user: dict = Depends(get_current_us
 @app.delete("/api/profiles/{profile_id}")
 def remove_profile(profile_id: str, user: dict = Depends(get_current_user)):
     with _profiles_lock:
-        profiles = [p for p in load_profiles() if p.get("id") != profile_id]
+        profiles = [p for p in load_profiles(for_update=True) if p.get("id") != profile_id]
         save_profiles(profiles)
     return {"success": True}
 
