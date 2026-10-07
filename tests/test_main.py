@@ -161,3 +161,72 @@ def test_a_missing_file_is_created_on_save(damaged):
     path.unlink()
     assert client.post("/api/profiles", json={"protocol": "rdp", "host": "10.0.0.9"}).status_code == 200
     assert [p["host"] for p in main.load_profiles()] == ["10.0.0.9"]
+
+
+# ----------------- Masked secrets stay with their host -----------------
+
+@pytest.fixture
+def api(tmp_path, monkeypatch):
+    """The API in no-auth mode with an empty profile store; connects are recorded, not run."""
+    from fastapi.testclient import TestClient
+    monkeypatch.setattr(main, "PROFILES_FILE", tmp_path / "profiles.json")
+    monkeypatch.setattr(main, "AUTH_MODE", "none")
+    import auth
+    monkeypatch.setattr(auth, "AUTH_MODE", "none")
+    connects = []
+    monkeypatch.setattr(main.session_manager, "connect",
+                        lambda config: connects.append(config) or {"success": True, "message": "ok"})
+    client = TestClient(main.app)
+    profile_id = client.post("/api/profiles", json={
+        "protocol": "rdp", "host": "10.0.0.5", "username": "kodi", "password": "real-pw",
+    }).json()["id"]
+    return client, profile_id, connects
+
+
+def masked(profile_id, **changes):
+    return {"id": profile_id, "protocol": "rdp", "host": "10.0.0.5", "username": "kodi",
+            "password": main.PASSWORD_MASK, **changes}
+
+
+def test_connect_reuses_the_password_for_the_same_host(api):
+    client, profile_id, connects = api
+    res = client.post("/api/session/connect", json={"custom": masked(profile_id, resolution="1920x1080")})
+    assert res.status_code == 200
+    assert connects[-1]["password"] == "real-pw"
+
+
+@pytest.mark.parametrize("changes", [
+    {"host": "attacker.example"},
+    {"host": "10.0.0.6"},
+    {"port": 3390},
+    {"protocol": "vnc"},
+])
+def test_connect_refuses_a_masked_password_for_another_target(api, changes):
+    """Otherwise any dashboard user could send a saved password to their own machine."""
+    client, profile_id, connects = api
+    res = client.post("/api/session/connect", json={"custom": masked(profile_id, **changes)})
+    assert res.status_code == 400
+    assert connects == []
+
+
+def test_saving_a_new_host_with_the_masked_password_is_refused(api):
+    client, profile_id, _ = api
+    res = client.post("/api/profiles", json=masked(profile_id, host="attacker.example"))
+    assert res.status_code == 400
+    stored = main.find_profile(main.load_profiles(), profile_id)
+    assert stored["host"] == "10.0.0.5" and stored["password"] == "real-pw"
+
+
+def test_a_new_host_with_a_new_password_is_saved(api):
+    client, profile_id, _ = api
+    res = client.post("/api/profiles", json=masked(profile_id, host="10.0.0.9", password="new-pw"))
+    assert res.status_code == 200
+    stored = main.find_profile(main.load_profiles(), profile_id)
+    assert stored["host"] == "10.0.0.9" and stored["password"] == "new-pw"
+
+
+def test_host_case_and_the_default_port_count_as_the_same_target(api):
+    client, profile_id, connects = api
+    res = client.post("/api/session/connect", json={"custom": masked(profile_id, host="10.0.0.5", port=3389)})
+    assert res.status_code == 200
+    assert main.same_target({"host": "PC.local"}, {"host": "pc.local", "port": 3389})

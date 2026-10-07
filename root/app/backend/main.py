@@ -39,7 +39,7 @@ from auth import (
     verify_state_cookie,
     clear_state_cookie
 )
-from session_manager import session_manager
+from session_manager import DEFAULT_PORTS, session_manager
 from log_buffer import BufferLogHandler, FileTail, LogBuffer
 from file_manager import (
     list_files,
@@ -395,11 +395,27 @@ def restore_masked_secrets(data: Dict[str, Any], stored: Optional[Dict[str, Any]
         if data.get(secret) == PASSWORD_MASK:
             data[secret] = stored.get(secret, "") if stored else ""
 
+def same_target(data: Dict[str, Any], stored: Dict[str, Any]) -> bool:
+    """Whether `data` connects to the same machine as the stored profile."""
+    def target(p: Dict[str, Any]):
+        protocol = p.get("protocol") or "rdp"
+        return (protocol, str(p.get("host") or "").lower(), p.get("port") or DEFAULT_PORTS.get(protocol))
+    return target(data) == target(stored)
+
+def check_masked_secrets_target(data: Dict[str, Any], stored: Optional[Dict[str, Any]]):
+    """A masked secret is only ever reused for the machine it was saved for. Otherwise
+    changing a profile's host would send its stored password to any machine, without
+    the password ever being shown."""
+    if stored and any(data.get(s) == PASSWORD_MASK for s in SECRET_FIELDS) and not same_target(data, stored):
+        raise HTTPException(status_code=400,
+                            detail="The host, port or protocol changed: enter the password (or SSH key) again")
+
 @app.post("/api/profiles")
 def save_profile(profile: ConnectionProfile, user: dict = Depends(get_current_user)):
     with _profiles_lock:
         profiles = load_profiles(for_update=True)
         existing = find_profile(profiles, profile.id)
+        check_masked_secrets_target(profile.model_dump(), existing)
         for secret in SECRET_FIELDS:
             if getattr(profile, secret) == PASSWORD_MASK:
                 setattr(profile, secret, existing.get(secret, "") if existing else "")
@@ -432,7 +448,9 @@ def connect_session(req: ConnectRequest, user: dict = Depends(get_current_user))
         config_dict = req.custom.model_dump()
         # Form was loaded from a saved profile and its secrets left untouched
         if any(config_dict.get(s) == PASSWORD_MASK for s in SECRET_FIELDS):
-            restore_masked_secrets(config_dict, find_profile(load_profiles(), req.custom.id))
+            stored = find_profile(load_profiles(), req.custom.id)
+            check_masked_secrets_target(config_dict, stored)
+            restore_masked_secrets(config_dict, stored)
     else:
         raise HTTPException(status_code=400, detail="Missing connection parameters")
 
