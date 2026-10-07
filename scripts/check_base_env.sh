@@ -8,19 +8,24 @@
 set -eu
 
 base_env=$1
-# Set per process, or overridden on purpose in the Dockerfile
-skip='^(HOSTNAME|PWD|OLDPWD|SHLVL|_|PATH|VIRTUAL_ENV|START_DOCKER|DEBIAN_FRONTEND)='
+# Set per process or per build step (BuildKit's tracing context differs on every RUN),
+# or overridden on purpose in the Dockerfile
+skip='^(HOSTNAME|PWD|OLDPWD|SHLVL|_|TRACEPARENT|TRACESTATE|PATH|VIRTUAL_ENV|START_DOCKER|DEBIAN_FRONTEND)='
 
 status=0
-grep -Ev "$skip" "$base_env" | while IFS= read -r line; do
+# Every mismatch is reported, so one failed build shows all that needs updating
+mismatches=$(grep -Ev "$skip" "$base_env" | while IFS= read -r line; do
     name=${line%%=*}
     expected=${line#*=}
     actual=$(printenv "$name" || true)
     if [ "$actual" != "$expected" ]; then
-        echo "check_base_env: $name is '$actual' here but '$expected' in the base image" >&2
-        exit 1
+        echo "check_base_env: $name is '$actual' here but '$expected' in the base image"
     fi
-done || status=1
+done)
+if [ -n "$mismatches" ]; then
+    printf '%s\n' "$mismatches" >&2
+    status=1
+fi
 
 # PATH may only add to the front of the base image's
 base_path=$(grep '^PATH=' "$base_env" | cut -d= -f2-)
