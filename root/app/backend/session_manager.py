@@ -620,6 +620,12 @@ class SessionManager:
 
     def set_clipboard(self, text: str) -> Dict[str, Any]:
         """Put text on the X11 CLIPBOARD selection; the RDP/VNC client syncs it to the remote side."""
+        with self.lock:
+            running = self.process is not None and self.process.poll() is None
+        if not running:
+            # Nothing would pick it up: reporting success here sent users looking for text
+            # that never reached the remote machine
+            return {"success": False, "message": "No session is running"}
         try:
             # xclip forks to own the selection, so its output must not be piped back to us
             subprocess.run(

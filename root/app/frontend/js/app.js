@@ -234,13 +234,15 @@ function setupEventListeners() {
         const text = document.getElementById("clip-text").value;
         if (!text) return;
         const results = [];
+        let sent = false;
         try {
             const res = await apiFetch("/api/session/clipboard", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ text })
             });
-            results.push(res.ok ? "Sent to Windows clipboard." : `Remote clipboard failed: ${await errorMessage(res, "unknown error")}`);
+            sent = res.ok;
+            results.push(res.ok ? "Sent to the remote session's clipboard." : `Not sent to the remote session: ${await errorMessage(res, "unknown error")}`);
         } catch (e) {
             results.push("Remote clipboard failed: network error.");
         }
@@ -253,6 +255,7 @@ function setupEventListeners() {
             }
         }
         clipStatus.textContent = results.join(" ");
+        clipStatus.classList.toggle("alert-error", !sent);
         clipStatus.classList.remove("hidden");
     });
 
