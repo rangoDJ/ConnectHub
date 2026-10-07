@@ -309,6 +309,12 @@ ConnectHub/
 
 ---
 
+## Image Size
+
+The image is built on LinuxServer's Selkies base, minus the parts ConnectHub never uses: Docker-in-Docker, the C/C++ compilers and build tools, every locale except `en_US.UTF-8` (and `C.UTF-8`), and the CJK serif fonts (the sans fonts remain, so SSH terminals still show CJK text). That saves about 800 MB. Setting another `LANG` or `LC_*` locale in the container therefore has no effect; it doesn't change anything on the remote machine either way.
+
+---
+
 ## Troubleshooting
 
 The **Connection Logs & Diagnostics** panel on the dashboard has three tabs, each keeping its last 1,000 lines:

@@ -1,6 +1,45 @@
 # syntax=docker/dockerfile:1
 # ubuntunoble stopped receiving builds in June 2026; its older Selkies rejects h264enc
-FROM ghcr.io/linuxserver/baseimage-selkies:ubunturesolute
+FROM ghcr.io/linuxserver/baseimage-selkies:ubunturesolute AS base
+
+# Strip what ConnectHub never uses from the base: Docker-in-Docker, compilers, all but one
+# locale, CJK serif fonts (~800 MB). Deleting files in a later layer can't shrink an
+# image, so this stage's filesystem is copied into a fresh one below. CI's layer cache
+# keeps this stage, and so that copied layer, unchanged until the base image changes,
+# so updates still only download ConnectHub's own layers.
+FROM base AS slim
+COPY scripts/slim_base.sh /tmp/slim_base.sh
+RUN sh /tmp/slim_base.sh && env | sort > /connecthub-base.env
+
+FROM scratch
+COPY --from=slim / /
+
+# The base image's configuration, which copying its files doesn't carry over.
+# check_base_env.sh below fails the build if this drifts from the base image.
+ENV HOME=/config \
+    LANGUAGE=en_US.UTF-8 \
+    LANG=en_US.UTF-8 \
+    TERM=xterm \
+    SHELL=/bin/bash \
+    S6_CMD_WAIT_FOR_SERVICES_MAXTIME=0 \
+    S6_VERBOSITY=1 \
+    S6_STAGE2_HOOK=/docker-mods \
+    DISPLAY=:1 \
+    PERL5LIB=/usr/local/bin \
+    PULSE_RUNTIME_PATH=/defaults \
+    SELKIES_INTERPOSER=/usr/lib/selkies_input_interposer.so \
+    SELKIES_WEBCAM_INTERPOSER=/usr/lib/selkies_v4l2_interposer.so \
+    NVIDIA_DRIVER_CAPABILITIES=all \
+    DISABLE_DRI3=false \
+    SELKIES_ENCODER=h264enc,h265enc,vp8enc,vp9enc,av1enc,jpeg \
+    SELKIES_ENABLE_BASIC_AUTH=false \
+    SELKIES_VIDEO_STREAMING_MODE=false \
+    SELKIES_ALLOWED_ORIGINS=* \
+    SELKIES_RATE_CONTROL_MODE=crf,cbr \
+    __GL_SYNC_TO_VBLANK=0 \
+    TITLE=Selkies
+# Docker was removed above; the base's svc-docker only sleeps with this false
+ENV START_DOCKER=false
 
 LABEL maintainer="kodi"
 LABEL description="ConnectHub - WebRTC remote desktop gateway for RDP, VNC and SSH, multi-GPU encoding (NVIDIA/AMD/Intel/CPU), Authentik SSO & Basic Auth, and WebUI File Sharing."
@@ -9,7 +48,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PYTHONUNBUFFERED=1 \
     VIRTUAL_ENV=/app/venv \
-    PATH="/app/venv/bin:$PATH"
+    PATH="/app/venv/bin:/lsiopy/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+COPY scripts/check_base_env.sh /tmp/check_base_env.sh
+RUN sh /tmp/check_base_env.sh /connecthub-base.env \
+    && rm -f /tmp/check_base_env.sh /connecthub-base.env
 
 # Install FreeRDP 3, GPU drivers for VA-API, Python 3, and utilities
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -19,7 +62,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libva-drm2 \
     vainfo \
     python3 \
-    python3-pip \
     python3-venv \
     procps \
     curl \
@@ -83,6 +125,13 @@ RUN /command/s6-rc-compile /tmp/s6-rc-check \
         /etc/s6-overlay/s6-rc.d \
     && rm -rf /tmp/s6-rc-check
 
+# What the session needs still runs after the slimming above
+RUN /lsiopy/bin/python3 -c "import selkies, pixelflux, pcmflux" \
+    && for bin in Xvfb nginx pulseaudio openbox xdotool xclip xterm xfreerdp3 xtigervncviewer sshpass s6-rc; do \
+           command -v "$bin" > /dev/null || { echo "missing after slimming: $bin" >&2; exit 1; }; \
+       done \
+    && locale -a | grep -qix 'en_US.utf8'
+
 # Release version, set by CI. Declared last so a new version doesn't invalidate
 # the cached package and pip layers above.
 ARG APP_VERSION=0.0.0-dev
@@ -93,3 +142,5 @@ VOLUME ["/config", "/shared"]
 
 # Port 3000 (HTTP) and 3001 (HTTPS, self-signed) serve the WebUI, API, and Selkies stream
 EXPOSE 3000 3001
+
+ENTRYPOINT ["/init"]
