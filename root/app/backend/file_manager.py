@@ -125,6 +125,15 @@ def get_file_for_download(relative_path: str) -> FileResponse:
     )
 
 def delete_path(relative_path: str) -> Dict[str, Any]:
+    # A symlink is deleted itself, never what it points to: safe_path() resolves links,
+    # which would make deleting a link to a folder empty the real folder
+    clean_rel = Path((relative_path or "").lstrip("/\\"))
+    if clean_rel.name not in ("", ".", ".."):
+        entry = safe_path(clean_rel.parent.as_posix()) / clean_rel.name
+        if entry.is_symlink():
+            entry.unlink()
+            return {"success": True, "message": f"Deleted {entry.name}"}
+
     target = safe_path(relative_path)
     if not target.exists():
         raise HTTPException(status_code=404, detail="File or folder not found")
