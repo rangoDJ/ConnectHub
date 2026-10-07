@@ -60,6 +60,10 @@ services:
       # Session cookie Secure flag: auto (follows https), true, false
       - COOKIE_SECURE=${COOKIE_SECURE:-auto}
 
+      # Only ConnectHub's own page may open the stream. Add origins (comma-separated) only
+      # if another page must embed it, e.g. https://portal.example.com; avoid "*".
+      # - SELKIES_ALLOWED_ORIGINS=
+
       # Optional custom session secret key (auto-generated if omitted)
       - SECRET_KEY=${SECRET_KEY:-}
 
