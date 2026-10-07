@@ -54,6 +54,12 @@ COPY scripts/check_base_env.sh /tmp/check_base_env.sh
 RUN sh /tmp/check_base_env.sh /connecthub-base.env \
     && rm -f /tmp/check_base_env.sh /connecthub-base.env
 
+# The base's "*" lets any page open the stream WebSocket. The session cookie only keeps
+# out other *sites*, so a page on a sibling subdomain (other.example.com beside
+# hub.example.com) could still connect and control the desktop. Empty is Selkies'
+# same-origin default: the Origin's hostname must match the Host nginx forwards.
+ENV SELKIES_ALLOWED_ORIGINS=
+
 # Install FreeRDP 3, GPU drivers for VA-API, Python 3, and utilities
 RUN apt-get update && apt-get install -y --no-install-recommends \
     freerdp3-x11 \

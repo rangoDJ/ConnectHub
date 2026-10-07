@@ -203,6 +203,16 @@ The application will automatically recognize the authenticated user and grant ac
 
 `FORWARD_AUTH_TRUSTED_PROXIES` is **required**: the header is only honoured when the request comes from one of these IPs/CIDRs (your proxy's address or Docker network). Otherwise anyone reaching the container port directly could forge the header. Also avoid publishing the container port publicly in this mode.
 
+### Which pages may open the stream
+
+Only ConnectHub's own page can open the remote desktop stream: Selkies checks that the browser's `Origin` matches the address you reached ConnectHub on, which keeps out pages on other sites, including other apps on sibling subdomains of the same domain. This works unchanged through a reverse proxy or tunnel, by LAN IP and on localhost. To allow another page (for example a portal that embeds ConnectHub from a different hostname), list its origin:
+
+```yaml
+SELKIES_ALLOWED_ORIGINS=https://portal.example.com
+```
+
+Avoid `*`, which lets any page connect if the browser sends your session cookie.
+
 ---
 
 ## Connection Types (RDP, VNC, SSH)
