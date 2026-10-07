@@ -145,3 +145,58 @@ def test_create_folder_rejects_a_duplicate(shared):
     with pytest.raises(HTTPException) as exc:
         fm.create_folder("", "docs")
     assert exc.value.status_code == 409
+
+
+# ----------------- Deleting a symlink -----------------
+
+def make_link(link, target, is_dir):
+    try:
+        link.symlink_to(target, target_is_directory=is_dir)
+    except OSError:
+        pytest.skip("this system can't create symlinks")
+
+
+def test_deleting_a_link_to_a_folder_keeps_the_folder(shared):
+    real = shared / "projects"
+    real.mkdir()
+    (real / "keep.txt").write_text("x")
+    make_link(shared / "shortcut", real, True)
+    fm.delete_path("shortcut")
+    assert not (shared / "shortcut").exists() and not (shared / "shortcut").is_symlink()
+    assert (real / "keep.txt").read_text() == "x"
+
+
+def test_deleting_a_link_to_a_file_keeps_the_file(shared):
+    real = shared / "report.txt"
+    real.write_text("x")
+    make_link(shared / "docs-link.txt", real, False)
+    fm.delete_path("docs-link.txt")
+    assert real.read_text() == "x"
+    assert not (shared / "docs-link.txt").is_symlink()
+
+
+def test_a_link_pointing_outside_can_still_be_deleted(shared, tmp_path):
+    """Removing the link touches nothing outside the shared folder."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret").write_text("x")
+    make_link(shared / "escape", outside, True)
+    fm.delete_path("escape")
+    assert (outside / "secret").read_text() == "x"
+    assert not (shared / "escape").is_symlink()
+
+
+def test_a_link_inside_a_subfolder_is_deleted_itself(shared):
+    sub = shared / "sub"
+    sub.mkdir()
+    real = shared / "data"
+    real.mkdir()
+    make_link(sub / "data-link", real, True)
+    fm.delete_path("sub/data-link")
+    assert real.is_dir() and not (sub / "data-link").is_symlink()
+
+
+def test_parent_traversal_is_still_rejected_on_delete():
+    with pytest.raises(HTTPException) as exc:
+        fm.delete_path("../etc")
+    assert exc.value.status_code == 403
