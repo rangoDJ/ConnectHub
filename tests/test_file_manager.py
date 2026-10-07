@@ -200,3 +200,37 @@ def test_parent_traversal_is_still_rejected_on_delete():
     with pytest.raises(HTTPException) as exc:
         fm.delete_path("../etc")
     assert exc.value.status_code == 403
+
+
+# ----------------- Uploads -----------------
+
+def upload(name, data=b"hello", path="", overwrite=False):
+    import asyncio
+    import io
+    from fastapi import UploadFile
+    return asyncio.run(fm.save_uploaded_file(UploadFile(io.BytesIO(data), filename=name), path, overwrite))
+
+
+@pytest.mark.parametrize("name", [
+    pytest.param("a" * 250 + ".txt", id="254-chars",  # a valid name on Linux and NTFS
+                 marks=pytest.mark.skipif(os.name == "nt", reason="exceeds Windows' 260-character path limit here")),
+    pytest.param("é" * 110 + ".txt", id="224-bytes"),  # over the old limit in UTF-8 bytes
+])
+def test_a_long_but_valid_name_can_be_uploaded(shared, name):
+    result = upload(name)
+    assert result["filename"] == name
+    assert (shared / name).read_bytes() == b"hello"
+
+
+def test_no_temp_file_is_left_behind(shared):
+    upload("report.txt")
+    assert sorted(p.name for p in shared.iterdir()) == ["report.txt"]
+
+
+def test_an_existing_file_is_only_replaced_with_overwrite(shared):
+    upload("report.txt", b"one")
+    with pytest.raises(HTTPException) as exc:
+        upload("report.txt", b"two")
+    assert exc.value.status_code == 409
+    upload("report.txt", b"two", overwrite=True)
+    assert (shared / "report.txt").read_bytes() == b"two"

@@ -83,8 +83,10 @@ async def save_uploaded_file(upload_file: UploadFile, relative_path: str = "", o
     if target_file.exists() and not overwrite:
         raise HTTPException(status_code=409, detail=f"{filename} already exists")
 
-    # Write to a temp file first so a failed upload never leaves a truncated file behind
-    tmp_file = target_dir / f".{filename}.{uuid.uuid4().hex}.part"
+    # Write to a temp file first so a failed upload never leaves a truncated file behind.
+    # Its name is fixed-length: built from the upload's name, a long but valid name went
+    # over the filesystem's 255-byte limit.
+    tmp_file = target_dir / f".upload-{uuid.uuid4().hex}.part"
     try:
         async with aiofiles.open(tmp_file, "wb") as f:
             while chunk := await upload_file.read(1024 * 1024): # 1MB chunks
