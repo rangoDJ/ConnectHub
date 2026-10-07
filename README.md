@@ -217,6 +217,8 @@ Pick the protocol at the top of the connection form. Each session runs fullscree
 
 Passwords and SSH keys are stored in `/config/profiles.json` (readable only by the container user) and are never passed on a command line. SSH keys and VNC password files are written to a private temporary directory for the length of the session and deleted afterwards.
 
+The WebUI never shows a saved password or key again. It is only reused for the host, port and protocol it was saved with: after changing any of those on a saved profile, enter the password (or SSH key) again.
+
 ### Disconnecting idle sessions
 
 A session runs inside the container, not the browser, so closing the tab leaves it running: Windows stays logged in, and a Windows PC can't be used locally while it is. Set `IDLE_DISCONNECT_MINUTES` to end the session once no dashboard has been open for that long:
