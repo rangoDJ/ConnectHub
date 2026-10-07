@@ -514,3 +514,27 @@ def test_connect_starts_the_idle_watcher_only_when_enabled(mgr, monkeypatch):
     mgr.connect({"protocol": "vnc", "host": "10.0.0.5"})
     sm.time.sleep(0.05)  # the watcher runs on its own thread
     assert started == [1200]
+
+
+# ----------------- Clipboard helper -----------------
+
+def test_clipboard_send_without_a_session_is_refused(mgr, monkeypatch):
+    calls = []
+    monkeypatch.setattr(sm.subprocess, "run", lambda *a, **k: calls.append(a))
+    result = mgr.set_clipboard("hello")
+    assert result == {"success": False, "message": "No session is running"}
+    assert calls == []  # nothing written to a clipboard nobody reads
+
+
+def test_clipboard_send_after_the_client_exited_is_refused(mgr, monkeypatch):
+    mgr.process = ExitedProc()
+    monkeypatch.setattr(sm.subprocess, "run", lambda *a, **k: None)
+    assert mgr.set_clipboard("hello")["success"] is False
+
+
+def test_clipboard_send_with_a_session_goes_to_xclip(mgr, monkeypatch):
+    calls = []
+    mgr.process = FakeProc()
+    monkeypatch.setattr(sm.subprocess, "run", lambda cmd, **k: calls.append((cmd, k["input"])))
+    assert mgr.set_clipboard("héllo")["success"] is True
+    assert calls == [(["xclip", "-selection", "clipboard", "-i"], "héllo".encode("utf-8"))]
