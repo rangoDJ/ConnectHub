@@ -60,6 +60,10 @@ RUN sh /tmp/check_base_env.sh /connecthub-base.env \
 # same-origin default: the Origin's hostname must match the Host nginx forwards.
 ENV SELKIES_ALLOWED_ORIGINS=
 
+# Selkies' own file panel (side menu) defaults to ~/Desktop. Point it at the shared
+# folder, so it shows what the Shared Files drawer and \\tsclient\SharedFolder show.
+ENV SELKIES_FILE_MANAGER_PATH=/shared
+
 # Install FreeRDP 3, GPU drivers for VA-API, Python 3, and utilities
 RUN apt-get update && apt-get install -y --no-install-recommends \
     freerdp3-x11 \
