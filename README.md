@@ -253,6 +253,7 @@ File sharing between your client browser and the remote Windows machine is bidir
    - Click the **📁 Shared Files** button in the top navigation bar or the in-stream floating toolbar.
    - **Upload**: Drag-and-drop any file into the drawer to make it instantly accessible inside Windows.
    - **Download**: Click **Download** next to any file saved from Windows.
+   - The file panel in Selkies' side menu (inside the stream) shows the same folder, and streams large downloads.
 3. **On the Docker Host**:
    - Files are stored on your host in `./shared` (mounted volume).
 
