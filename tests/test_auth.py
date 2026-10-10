@@ -299,7 +299,8 @@ def proxied(headers):
     """A request as nginx hands it on: X-Real-IP is the address that connected to nginx."""
     from starlette.requests import Request
     raw = [(k.lower().encode(), v.encode()) for k, v in headers.items()]
-    return Request({"type": "http", "headers": raw, "client": ("127.0.0.1", 0)})
+    return Request({"type": "http", "headers": raw, "client": ("127.0.0.1", 0), "scheme": "http",
+                    "server": ("127.0.0.1", 8000), "path": "/auth/login", "query_string": b""})
 
 
 @pytest.mark.parametrize("trusted, headers, expected", [
@@ -333,3 +334,28 @@ def test_forward_auth_trusts_the_peer_not_a_forwarded_address(auth, monkeypatch)
     with pytest.raises(auth.HTTPException) as exc:
         auth.get_current_user(request)
     assert exc.value.status_code == 401
+
+
+# ----------------- Secure cookie behind a TLS-terminating proxy -----------------
+
+@pytest.mark.parametrize("trusted, headers, secure", [
+    # direct over HTTPS (port 3001)
+    ("", {"X-Real-IP": "203.0.113.9", "X-Forwarded-Proto": "https"}, True),
+    # tunnel terminates TLS and talks HTTP to port 3000: nginx says http, the tunnel said https
+    ("172.21.0.0/16", {"X-Real-IP": "172.21.0.4", "X-Forwarded-Proto": "http",
+                       "X-Proxy-Forwarded-Proto": "https"}, True),
+    # the same without TRUSTED_PROXIES: the forwarded scheme isn't believed
+    ("", {"X-Real-IP": "172.21.0.4", "X-Forwarded-Proto": "http", "X-Proxy-Forwarded-Proto": "https"}, False),
+    # a direct visitor can't claim https
+    ("172.21.0.0/16", {"X-Real-IP": "203.0.113.9", "X-Forwarded-Proto": "http",
+                       "X-Proxy-Forwarded-Proto": "https"}, False),
+    # trusted proxy that received plain http
+    ("172.21.0.0/16", {"X-Real-IP": "172.21.0.4", "X-Forwarded-Proto": "http",
+                       "X-Proxy-Forwarded-Proto": "http"}, False),
+    # trusted proxy that sent no scheme: nginx's
+    ("172.21.0.0/16", {"X-Real-IP": "172.21.0.4", "X-Forwarded-Proto": "https"}, True),
+])
+def test_cookie_secure_auto_behind_a_proxy(auth, monkeypatch, trusted, headers, secure):
+    monkeypatch.setattr(auth, "COOKIE_SECURE", "auto")
+    monkeypatch.setattr(auth, "PROXY_NETS", auth._parse_networks(trusted))
+    assert auth._cookie_secure(proxied(headers)) is secure

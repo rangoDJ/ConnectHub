@@ -212,7 +212,7 @@ If ConnectHub sits behind a reverse proxy or tunnel (Cloudflare Tunnel, Traefik,
 TRUSTED_PROXIES=172.18.0.0/16
 ```
 
-Without it, failed logins from anyone count against everyone: ten wrong passwords lock all visitors out for 15 minutes, and logs show the proxy's address. Only list addresses that are proxies: a listed address can claim to forward for any visitor.
+Without it, failed logins from anyone count against everyone: ten wrong passwords lock all visitors out for 15 minutes, and logs show the proxy's address. It also lets `COOKIE_SECURE=auto` see that the proxy serves HTTPS when it talks plain HTTP to ConnectHub, so the session cookie is marked `Secure`. Only list addresses that are proxies: a listed address can claim to forward for any visitor.
 
 ### Which pages may open the stream
 
