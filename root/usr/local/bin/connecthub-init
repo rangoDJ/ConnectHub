@@ -1,0 +1,22 @@
+#!/bin/bash
+# The container's entry point. Everything the container prints (every service, the web
+# server, the session's client, start-up) also goes into a rotated log file, which the
+# dashboard's log window reads. s6-log's "1" passes each line on to the original stdout
+# first, so `docker logs` shows everything as before. Then /init takes over as PID 1, as
+# s6-overlay requires.
+LOG_DIR=/var/log/connecthub/all
+
+if mkdir -p "$LOG_DIR" 2>/dev/null && [ -w "$LOG_DIR" ] && [ -x /command/s6-log ]; then
+    exec > >(exec /command/s6-log 1 T n5 s4000000 "$LOG_DIR") 2>&1
+else
+    # Never let logging keep the container from starting
+    echo "connecthub-init: can't write $LOG_DIR; the dashboard's log window stays empty" >&2
+fi
+
+# Selkies logs clipboard transfers at debug level. Exported here, it reaches every
+# service: s6-overlay saves /init's environment for them.
+if [ "${CLIPBOARD_DEBUG,,}" = "true" ]; then
+    export SELKIES_DEBUG=true
+fi
+
+exec /init "$@"
