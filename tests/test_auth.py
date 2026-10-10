@@ -291,3 +291,45 @@ def test_password_change_rotates_only_that_users_epoch(auth, open_signups):
 def test_changing_an_unknown_users_password_fails(auth):
     with pytest.raises(KeyError):
         auth.set_user_password("ghost", "ghost-password")
+
+
+# ----------------- Client address behind a reverse proxy -----------------
+
+def proxied(headers):
+    """A request as nginx hands it on: X-Real-IP is the address that connected to nginx."""
+    from starlette.requests import Request
+    raw = [(k.lower().encode(), v.encode()) for k, v in headers.items()]
+    return Request({"type": "http", "headers": raw, "client": ("127.0.0.1", 0)})
+
+
+@pytest.mark.parametrize("trusted, headers, expected", [
+    # no proxy configured: the peer, whatever it forwards
+    ("", {"X-Real-IP": "172.21.0.4", "X-Forwarded-For": "76.69.57.92, 172.21.0.4"}, "172.21.0.4"),
+    # behind a trusted tunnel: the visitor (nginx appended the tunnel's own address)
+    ("172.21.0.0/16", {"X-Real-IP": "172.21.0.4", "X-Forwarded-For": "76.69.57.92, 172.21.0.4"}, "76.69.57.92"),
+    # auth_request passes the tunnel's header on without appending
+    ("172.21.0.0/16", {"X-Real-IP": "172.21.0.4", "X-Forwarded-For": "76.69.57.92"}, "76.69.57.92"),
+    # a visitor's forged entry sits left of the address the proxy appended
+    ("172.21.0.0/16", {"X-Real-IP": "172.21.0.4", "X-Forwarded-For": "1.2.3.4, 76.69.57.92, 172.21.0.4"}, "76.69.57.92"),
+    # a direct visitor can't claim another address
+    ("172.21.0.0/16", {"X-Real-IP": "203.0.113.9", "X-Forwarded-For": "1.2.3.4"}, "203.0.113.9"),
+    # a chain of trusted proxies is skipped
+    ("172.21.0.0/16, 10.0.0.0/8", {"X-Real-IP": "172.21.0.4", "X-Forwarded-For": "76.69.57.92, 10.0.0.2"}, "76.69.57.92"),
+    # trusted proxy that forwarded nothing: the proxy itself
+    ("172.21.0.0/16", {"X-Real-IP": "172.21.0.4"}, "172.21.0.4"),
+])
+def test_client_ip_behind_a_proxy(auth, monkeypatch, trusted, headers, expected):
+    monkeypatch.setattr(auth, "PROXY_NETS", auth._parse_networks(trusted))
+    assert auth.client_ip(proxied(headers)) == expected
+
+
+def test_forward_auth_trusts_the_peer_not_a_forwarded_address(auth, monkeypatch):
+    """TRUSTED_PROXIES must not let a forwarded address pass the forward-auth check."""
+    monkeypatch.setattr(auth, "AUTH_MODE", "forward_auth")
+    monkeypatch.setattr(auth, "TRUSTED_PROXY_NETS", auth._parse_networks("10.9.9.9"))
+    monkeypatch.setattr(auth, "PROXY_NETS", auth._parse_networks("172.21.0.0/16"))
+    request = proxied({"X-Real-IP": "172.21.0.4", "X-Forwarded-For": "10.9.9.9",
+                       auth.FORWARD_AUTH_HEADER: "mallory"})
+    with pytest.raises(auth.HTTPException) as exc:
+        auth.get_current_user(request)
+    assert exc.value.status_code == 401
