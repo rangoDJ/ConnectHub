@@ -35,6 +35,8 @@ from auth import (
     client_ip,
     create_session_cookie,
     clear_session_cookie,
+    end_session,
+    COOKIE_NAME,
     create_state_cookie,
     verify_state_cookie,
     clear_state_cookie
@@ -323,11 +325,15 @@ async def oidc_callback(request: Request, code: Optional[str] = None, state: Opt
     create_session_cookie(response, {"username": username, "email": email, "auth_mode": "oidc"}, request)
     return response
 
+# POST only: the session cookie is SameSite=Lax, which still rides along when another site
+# navigates here, so a GET logout let any page sign the user out
 @app.post("/auth/logout")
-@app.get("/auth/logout")
-async def logout():
-    # Cookie must be cleared on the response actually returned, not an injected one
-    response = RedirectResponse("/login.html", status_code=status.HTTP_302_FOUND)
+def logout(request: Request):
+    # Ends the session itself, not just this browser's copy of the cookie
+    end_session(request.cookies.get(COOKIE_NAME))
+    # Cookie must be cleared on the response actually returned, not an injected one.
+    # 303 so the browser follows up with a GET of the login page.
+    response = RedirectResponse("/login.html", status_code=status.HTTP_303_SEE_OTHER)
     clear_session_cookie(response)
     return response
 

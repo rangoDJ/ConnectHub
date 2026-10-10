@@ -150,3 +150,81 @@ def test_change_requires_a_session(app):
     main, _ = app
     signup(main)
     assert change(TestClient(main.app), "alice-password", "alice-password-2").status_code == 401
+
+
+# ----------------- Logout -----------------
+
+def test_logout_by_get_is_refused(app):
+    """Another site could otherwise sign the user out just by linking here."""
+    main, _ = app
+    res = TestClient(main.app).get("/auth/logout", follow_redirects=False)
+    assert res.status_code == 405
+
+
+def test_logout_by_post_clears_the_session(app):
+    main, auth = app
+    client, res = signup(main)
+    assert res.status_code == 200
+    res = client.post("/auth/logout", follow_redirects=False)
+    assert res.status_code == 303
+    assert res.headers["location"] == "/login.html"
+    assert auth.COOKIE_NAME in res.headers.get("set-cookie", "")
+    assert client.get("/auth/status").json()["authenticated"] is False
+
+
+# ----------------- Server-side sessions -----------------
+
+def test_a_copied_cookie_stops_working_after_logout(app):
+    """Logging out ends the session, not just this browser's copy of the cookie."""
+    main, auth = app
+    client, res = signup(main)
+    cookie = client.cookies.get(auth.COOKIE_NAME)
+    copy = TestClient(main.app, cookies={auth.COOKIE_NAME: cookie})
+    assert copy.get("/auth/status").json()["authenticated"] is True
+    client.post("/auth/logout", follow_redirects=False)
+    assert copy.get("/auth/status").json()["authenticated"] is False
+
+
+def test_logging_out_one_session_keeps_the_others(app):
+    main, auth = app
+    signup(main)
+    laptop, phone = login(main), login(main)
+    laptop.post("/auth/logout", follow_redirects=False)
+    assert phone.get("/auth/status").json()["authenticated"] is True
+
+
+def test_sessions_survive_a_restart(app):
+    main, auth = app
+    client, _ = signup(main)
+    cookie = client.cookies.get(auth.COOKIE_NAME)
+    for name in ("auth", "main"):
+        sys.modules.pop(name, None)
+    main2 = importlib.import_module("main")
+    sys.modules["auth"].AUTH_MODE = main2.AUTH_MODE = "basic"
+    copy = TestClient(main2.app, cookies={auth.COOKIE_NAME: cookie})
+    assert copy.get("/auth/status").json()["authenticated"] is True
+
+
+def test_a_validly_signed_cookie_without_a_session_is_rejected(app):
+    """Cookies issued before sessions had ids; also any cookie whose session ended."""
+    main, auth = app
+    signup(main)
+    token = auth.serializer.dumps({"username": "alice", "auth_mode": "basic",
+                                   "pwv": auth.user_epoch("alice")})
+    client = TestClient(main.app, cookies={auth.COOKIE_NAME: token})
+    assert client.get("/auth/status").json()["authenticated"] is False
+
+
+def test_expired_sessions_are_dropped_from_the_file(app, monkeypatch):
+    main, auth = app
+    signup(main)
+    real_time = auth.time.time
+    monkeypatch.setattr(auth.time, "time", lambda: real_time() + auth.MAX_AGE + 60)
+    login(main)
+    assert len(auth._load_sessions()) == 1  # only the new one
+
+
+def test_a_damaged_sessions_file_means_no_sessions(app):
+    main, auth = app
+    auth.SESSIONS_FILE.write_text("{not json")
+    assert auth._load_sessions() == {}

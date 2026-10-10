@@ -38,7 +38,9 @@
                 <span id="user-display-name" class="user-display-name">user</span>
                 <!-- Only shown with AUTH_MODE=basic; SSO passwords are managed by the provider -->
                 <button id="btn-open-password" class="btn btn-sm btn-ghost hidden">Password</button>
-                <a href="/auth/logout" class="btn btn-sm btn-outline">Logout</a>
+                <form method="post" action="/auth/logout" class="logout-form">
+                    <button type="submit" class="btn btn-sm btn-outline">Logout</button>
+                </form>
             </div>
             <!-- Only shown in the stream view -->
             <button id="btn-collapse-nav" class="btn btn-sm btn-ghost nav-collapse-btn" title="Hide top bar" aria-label="Hide top bar">▴</button>

@@ -170,6 +170,9 @@ body {
 }
 .btn-outline:hover { color: var(--text-main); border-color: var(--text-muted); }
 
+/* Logout is a POST form; the form itself takes no room, so its button sits in the row like the others */
+.logout-form { display: contents; }
+
 .btn-ghost {
     background: transparent;
     color: var(--text-muted);
