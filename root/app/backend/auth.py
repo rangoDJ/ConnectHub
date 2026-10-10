@@ -251,6 +251,70 @@ def check_basic_credentials(username: str, password: str) -> bool:
     ok = verify_password_hash(password, user["hash"] if user else _DUMMY_HASH)
     return user is not None and ok
 
+# ----------------- Sessions -----------------
+
+# Session cookies are signed, so the server can trust them without storing them, but
+# then logging out could only delete the browser's copy: any other copy stayed valid
+# until it expired. Each cookie therefore names a session id that must still be listed
+# here, and logging out removes it. Kept on disk so a restart doesn't sign everyone out.
+SESSIONS_FILE = CONFIG_DIR / "sessions.json"
+_sessions_lock = threading.Lock()
+
+def _load_sessions() -> Dict[str, float]:
+    """{session id: expiry time}. A missing or damaged file just means no sessions."""
+    try:
+        data = json.loads(SESSIONS_FILE.read_text())
+        if isinstance(data, dict):
+            return {sid: float(exp) for sid, exp in data.items() if isinstance(sid, str)}
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError, TypeError):
+        logger.warning("%s is unreadable; existing sessions must log in again", SESSIONS_FILE)
+    return {}
+
+def _save_sessions(sessions: Dict[str, float]):
+    """Caller must hold _sessions_lock."""
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = SESSIONS_FILE.with_name(SESSIONS_FILE.name + ".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(sessions, f)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, SESSIONS_FILE)
+
+_sessions = _load_sessions()
+
+def start_session() -> str:
+    """A new session id, valid for MAX_AGE."""
+    global _sessions
+    sid = secrets.token_urlsafe(24)
+    now = time.time()
+    with _sessions_lock:
+        sessions = {k: v for k, v in _sessions.items() if v > now}  # drop expired ones
+        sessions[sid] = now + MAX_AGE
+        _save_sessions(sessions)
+        _sessions = sessions
+    return sid
+
+def session_active(sid: Optional[str]) -> bool:
+    return bool(sid) and _sessions.get(sid, 0) > time.time()
+
+def end_session(token: Optional[str]):
+    """Revoke the session a cookie names, so no copy of that cookie works any more."""
+    global _sessions
+    if not token:
+        return
+    try:
+        sid = serializer.loads(token, max_age=MAX_AGE).get("sid")
+    except (BadSignature, SignatureExpired, AttributeError):
+        return
+    with _sessions_lock:
+        if sid in _sessions:
+            sessions = {k: v for k, v in _sessions.items() if k != sid}
+            _save_sessions(sessions)
+            _sessions = sessions
+
 # ----------------- Login rate limiting -----------------
 
 LOGIN_MAX_FAILURES = 10
@@ -350,7 +414,7 @@ def _cookie_secure(request: Optional[Request]) -> bool:
 def create_session_cookie(response: Response, user_data: dict, request: Optional[Request] = None):
     if user_data.get("auth_mode") == "basic":
         user_data = {**user_data, "pwv": user_epoch(user_data.get("username", ""))}
-    token = serializer.dumps(user_data)
+    token = serializer.dumps({**user_data, "sid": start_session()})
     response.set_cookie(
         key=COOKIE_NAME,
         value=token,
@@ -418,7 +482,8 @@ def get_current_user(request: Request) -> Dict[str, Any]:
             # is removed from users.json
             epoch = user_epoch(data.get("username", ""))
             stale = AUTH_MODE == "basic" and (epoch is None or data.get("pwv") != epoch)
-            if data.get("auth_mode") == AUTH_MODE and not stale:
+            # Also rejects cookies issued before sessions had ids: one more login after upgrading
+            if data.get("auth_mode") == AUTH_MODE and not stale and session_active(data.get("sid")):
                 return {
                     "authenticated": True,
                     "username": data.get("username", "user"),

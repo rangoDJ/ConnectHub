@@ -162,6 +162,7 @@ ALLOW_SIGNUPS=false
 ```
 - **First run:** there is no default account and no password in the environment. The first visitor to the login page is asked to create an account. **Do this right after starting the container**, before anyone else can reach it.
 - **More accounts:** sign-up is off by default. Set `ALLOW_SIGNUPS=true` to show a **Create one** link on the login page, and set it back to `false` once everyone has an account. Creating the first account is always allowed.
+- **Sessions:** a login lasts 7 days. **Logout** ends that session on the server, so a copy of its cookie stops working too; other devices stay signed in. Sessions (basic and OIDC) are listed in `/config/sessions.json`, so a restart keeps you signed in.
 - **Changing a password:** click **Password** in the top bar. This signs out that user's other sessions.
 - **Storage:** accounts live in `/config/users.json`, with passwords as salted scrypt hashes and the file readable only by the container user.
 - **Forgotten password:** remove that user's entry from `/config/users.json` (or delete the file to start over) and restart the container.
