@@ -150,3 +150,23 @@ def test_change_requires_a_session(app):
     main, _ = app
     signup(main)
     assert change(TestClient(main.app), "alice-password", "alice-password-2").status_code == 401
+
+
+# ----------------- Logout -----------------
+
+def test_logout_by_get_is_refused(app):
+    """Another site could otherwise sign the user out just by linking here."""
+    main, _ = app
+    res = TestClient(main.app).get("/auth/logout", follow_redirects=False)
+    assert res.status_code == 405
+
+
+def test_logout_by_post_clears_the_session(app):
+    main, auth = app
+    client, res = signup(main)
+    assert res.status_code == 200
+    res = client.post("/auth/logout", follow_redirects=False)
+    assert res.status_code == 303
+    assert res.headers["location"] == "/login.html"
+    assert auth.COOKIE_NAME in res.headers.get("set-cookie", "")
+    assert client.get("/auth/status").json()["authenticated"] is False
