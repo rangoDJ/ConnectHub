@@ -204,6 +204,16 @@ The application will automatically recognize the authenticated user and grant ac
 
 `FORWARD_AUTH_TRUSTED_PROXIES` is **required**: the header is only honoured when the request comes from one of these IPs/CIDRs (your proxy's address or Docker network). Otherwise anyone reaching the container port directly could forge the header. Also avoid publishing the container port publicly in this mode.
 
+### Behind a reverse proxy or tunnel
+
+If ConnectHub sits behind a reverse proxy or tunnel (Cloudflare Tunnel, Traefik, Nginx Proxy Manager, ...), every request reaches it from the proxy's address. List the proxy's IPs or network so ConnectHub uses the visitor's address from the proxy's `X-Forwarded-For` header instead:
+
+```ini
+TRUSTED_PROXIES=172.18.0.0/16
+```
+
+Without it, failed logins from anyone count against everyone: ten wrong passwords lock all visitors out for 15 minutes, and logs show the proxy's address. Only list addresses that are proxies: a listed address can claim to forward for any visitor.
+
 ### Which pages may open the stream
 
 Only ConnectHub's own page can open the remote desktop stream: Selkies checks that the browser's `Origin` matches the address you reached ConnectHub on, which keeps out pages on other sites, including other apps on sibling subdomains of the same domain. This works unchanged through a reverse proxy or tunnel, by LAN IP and on localhost. To allow another page (for example a portal that embeds ConnectHub from a different hostname), list its origin:
