@@ -234,3 +234,43 @@ def test_an_existing_file_is_only_replaced_with_overwrite(shared):
     assert exc.value.status_code == 409
     upload("report.txt", b"two", overwrite=True)
     assert (shared / "report.txt").read_bytes() == b"two"
+
+
+# ----------------- Upload temp files -----------------
+
+def temp_name():
+    import uuid
+    return f".upload-{uuid.uuid4().hex}.part"
+
+
+def test_upload_temp_files_are_not_listed(shared):
+    (shared / temp_name()).write_bytes(b"partial")
+    (shared / "report.txt").write_text("x")
+    assert [f["name"] for f in fm.list_files("")] == ["report.txt"]
+
+
+def test_a_stale_upload_temp_file_is_removed(shared):
+    stale = shared / temp_name()
+    stale.write_bytes(b"cut off")
+    old = stale.stat().st_mtime - fm.STALE_UPLOAD_SECONDS - 60
+    os.utime(stale, (old, old))
+    fm.list_files("")
+    assert not stale.exists()
+
+
+def test_a_running_upload_temp_file_is_kept(shared):
+    running = shared / temp_name()
+    running.write_bytes(b"in progress")
+    fm.list_files("")
+    assert running.exists()
+
+
+@pytest.mark.parametrize("name", [".upload-notes.part", "upload-" + "0" * 32 + ".part", ".hidden"])
+def test_files_that_only_look_similar_are_listed(shared, name):
+    (shared / name).write_text("x")
+    assert [f["name"] for f in fm.list_files("")] == [name]
+
+
+def test_a_finished_upload_leaves_no_temp_file(shared):
+    upload("done.txt")
+    assert [p.name for p in shared.iterdir()] == ["done.txt"]
