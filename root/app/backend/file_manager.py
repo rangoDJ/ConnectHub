@@ -1,5 +1,7 @@
 import os
+import re
 import shutil
+import time
 import uuid
 from pathlib import Path
 from typing import List, Dict, Any
@@ -8,6 +10,12 @@ from fastapi.responses import FileResponse
 import aiofiles
 
 SHARED_DIR = Path(os.environ.get("SHARED_DIR", "/shared")).resolve()
+
+# Uploads are written to a temp file first (see save_uploaded_file). A running upload
+# keeps touching its file; one untouched this long was cut off (container stopped
+# mid-upload, so the cleanup never ran) and is removed the next time its folder is listed.
+UPLOAD_TEMP_NAME = re.compile(r"^\.upload-[0-9a-f]{32}\.part$")
+STALE_UPLOAD_SECONDS = 24 * 60 * 60
 
 def ensure_shared_dir():
     SHARED_DIR.mkdir(parents=True, exist_ok=True)
@@ -52,6 +60,10 @@ def list_files(relative_path: str = "") -> List[Dict[str, Any]]:
     for entry in target.iterdir():
         try:
             stat = entry.stat()
+            if UPLOAD_TEMP_NAME.match(entry.name):
+                if entry.is_file() and time.time() - stat.st_mtime > STALE_UPLOAD_SECONDS:
+                    entry.unlink(missing_ok=True)
+                continue
             is_dir = entry.is_dir()
             rel_entry = entry.relative_to(SHARED_DIR).as_posix()
             items.append({
