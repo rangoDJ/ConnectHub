@@ -138,7 +138,8 @@ def access_record(path):
 
 @pytest.mark.parametrize("path, logged", [
     ("/api/session/status", False),
-    ("/api/logs/selkies?cursor=12", False),
+    ("/api/logs?cursor=12", False),
+    ("/api/logsx", True),
     ("/api/session/connect", True),
     ("/api/session/statusx", True),
     ("/auth/login", True),

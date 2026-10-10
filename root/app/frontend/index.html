@@ -211,19 +211,15 @@
                         </div>
                     </div>
 
-                    <!-- Connection Logs / Console -->
+                    <!-- Logs -->
                     <div class="card logs-card">
                         <div class="card-header logs-header" id="logs-toggle">
-                            <h2>Connection Logs & Diagnostics</h2>
-                            <div class="logs-tabs" role="tablist" aria-label="Log source">
-                                <button type="button" class="logs-tab active" role="tab" aria-selected="true" data-log-source="session" title="FreeRDP / VNC / SSH output for the current session">Session</button>
-                                <button type="button" class="logs-tab" role="tab" aria-selected="false" data-log-source="server" title="ConnectHub's own server log: logins, errors">ConnectHub</button>
-                                <button type="button" class="logs-tab" role="tab" aria-selected="false" data-log-source="selkies" title="The Selkies streaming server: video, audio, clipboard">Selkies</button>
-                            </div>
+                            <h2>Logs</h2>
+                            <input type="search" id="logs-filter" class="logs-filter" placeholder="Filter…" aria-label="Show only log lines containing this text">
                             <span class="logs-arrow">▼</span>
                         </div>
                         <div id="logs-body" class="logs-body">
-                            <pre id="logs-content">No active connection logs.</pre>
+                            <pre id="logs-content">Loading logs…</pre>
                         </div>
                     </div>
                 </div>

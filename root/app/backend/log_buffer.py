@@ -1,10 +1,9 @@
-"""Log lines kept in memory for the dashboard's Connection Logs panel.
+"""Log lines kept in memory for the dashboard's Logs window.
 
-Each source (the session, ConnectHub's own server log, Selkies) is a LogBuffer. The
-panel polls it with the cursor from its previous read and gets only the lines added
-since, so a long log isn't resent every two seconds.
+The panel shows the container's log file through a LogBuffer, polling it with the
+cursor from its previous read to get only the lines added since, so a long log isn't
+resent every two seconds.
 """
-import logging
 import os
 import threading
 from collections import deque
@@ -55,21 +54,6 @@ class LogBuffer:
             skip = cursor - first
             return {"lines": [l for i, l in enumerate(self._lines) if i >= skip],
                     "cursor": self._next, "reset": False}
-
-
-class BufferLogHandler(logging.Handler):
-    """Copies log records into a LogBuffer."""
-
-    def __init__(self, buffer: LogBuffer, fmt: str, level: int = logging.INFO):
-        super().__init__(level)
-        self.buffer = buffer
-        self.setFormatter(logging.Formatter(fmt, "%H:%M:%S"))
-
-    def emit(self, record: logging.LogRecord):
-        try:
-            self.buffer.append(self.format(record))
-        except Exception:
-            self.handleError(record)
 
 
 class FileTail:

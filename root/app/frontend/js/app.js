@@ -199,7 +199,7 @@ function setupEventListeners() {
         logsBody.classList.toggle("hidden");
         pollLogs();
     });
-    setupLogTabs();
+    setupLogFilter();
 
     // Drawers
     btnOpenFiles.addEventListener("click", () => {
@@ -423,7 +423,7 @@ async function pollStatus() {
             unloadStream();
             // Explain why the session ended instead of silently returning to the dashboard
             if (data.status === "error" && (previousStatus === "connecting" || previousStatus === "connected")) {
-                showAlert(`Connection failed: ${data.last_error || "unknown error"} (see Connection Logs)`, "error");
+                showAlert(`Connection failed: ${data.last_error || "unknown error"} (see Logs)`, "error");
             }
         }
     } catch (e) {
@@ -431,62 +431,53 @@ async function pollStatus() {
     }
 }
 
-// ----------------- Connection Logs panel -----------------
+// ----------------- Logs panel -----------------
 
-// Keep in step with log_buffer.DEFAULT_MAX_LINES
-const MAX_LOG_LINES = 1000;
-const LOG_EMPTY_TEXT = {
-    session: "No session log yet. It fills in when you connect.",
-    server: "No ConnectHub log lines yet.",
-    selkies: "No Selkies log lines yet.",
-};
+// One window with everything the container logs: every service, this server, the
+// session's client and start-up (see connecthub-init). Keep in step with all_log in main.py.
+const MAX_LOG_LINES = 2000;
 
-let logSource = "session";
 let logCursor = null;
 let logLineCount = 0;
-// Bumped on every tab switch, so a reply for the previous tab is thrown away
-let logGeneration = 0;
-let logPollInFlight = null;
+let logPollInFlight = false;
 let logPollTimer = null;
+let logFilter = "";
 
 function logLineClass(line) {
     const classes = ["log-line"];
-    if (line.includes("[connecthub]")) classes.push("log-connecthub");
-    // FreeRDP and ConnectHub write [ERROR] / [WARN]; Selkies (Python logging) writes ERROR: / WARNING:
-    if (/\[(ERROR|FATAL)\]|\b(ERROR|CRITICAL):/.test(line)) classes.push("log-error");
-    else if (/\[WARN(ING)?\]|\bWARNING:/.test(line)) classes.push("log-warn");
+    // The session's client (FreeRDP / VNC viewer / SSH), tagged by session_manager
+    if (/\[(RDP|VNC|SSH)\] /.test(line)) classes.push("log-session");
+    // ConnectHub's own messages (Python logging: "[LEVEL] name: message")
+    else if (/\[[A-Z]+\] (session_manager|server|auth|main):/.test(line)) classes.push("log-connecthub");
+    // [ERROR] / [WARN] from FreeRDP and ConnectHub, [error] / [warn] from nginx,
+    // ERROR: / WARNING: from Selkies
+    if (/\[(error|fatal|crit|critical|alert|emerg)\]|\b(ERROR|CRITICAL):/i.test(line)) classes.push("log-error");
+    else if (/\[warn(ing)?\]|\bWARNING:/i.test(line)) classes.push("log-warn");
     return classes.join(" ");
+}
+
+function logLineMatches(line) {
+    return !logFilter || line.toLowerCase().includes(logFilter);
 }
 
 function logLineElement(line) {
     const el = document.createElement("div");
     el.className = logLineClass(line);
     el.textContent = line;
+    el.hidden = !logLineMatches(line);
     return el;
 }
 
-function setupLogTabs() {
-    document.querySelectorAll(".logs-tab").forEach(tab => {
-        tab.addEventListener("click", e => {
-            e.stopPropagation(); // the header's own click collapses the panel
-            logsBody.classList.remove("hidden");
-            selectLogSource(tab.dataset.logSource);
+function setupLogFilter() {
+    const input = document.getElementById("logs-filter");
+    // The header's own click collapses the panel
+    input.addEventListener("click", e => e.stopPropagation());
+    input.addEventListener("input", () => {
+        logFilter = input.value.trim().toLowerCase();
+        logsContent.querySelectorAll(".log-line:not(.log-placeholder)").forEach(el => {
+            el.hidden = !logLineMatches(el.textContent);
         });
     });
-}
-
-function selectLogSource(source) {
-    if (source !== logSource) {
-        logSource = source;
-        logCursor = null;
-        logGeneration++;
-        document.querySelectorAll(".logs-tab").forEach(tab => {
-            const active = tab.dataset.logSource === source;
-            tab.classList.toggle("active", active);
-            tab.setAttribute("aria-selected", String(active));
-        });
-    }
-    pollLogs();
 }
 
 function startLogPolling() {
@@ -496,34 +487,30 @@ function startLogPolling() {
 }
 
 async function pollLogs() {
-    const generation = logGeneration;
     // Nothing to show while collapsed; expanding the panel polls straight away
-    if (logsBody.classList.contains("hidden") || logPollInFlight === generation) return;
-    logPollInFlight = generation;
-    const source = logSource;
+    if (logsBody.classList.contains("hidden") || logPollInFlight) return;
+    logPollInFlight = true;
     try {
         const query = logCursor === null ? "" : `?cursor=${logCursor}`;
-        const res = await apiFetch(`/api/logs/${source}${query}`);
-        if (!res.ok || generation !== logGeneration) return;
+        const res = await apiFetch(`/api/logs${query}`);
+        if (!res.ok) return;
         const data = await res.json();
-        if (generation !== logGeneration) return;
         logCursor = data.cursor;
-        renderLogs(data, source);
+        renderLogs(data);
     } catch (e) {
         // Silent poll fail
     } finally {
-        if (logPollInFlight === generation) logPollInFlight = null;
+        logPollInFlight = false;
     }
 }
 
-// Adds what the server returned since the last poll; `reset` replaces the panel's contents
-// (first read, a new session, or a server restart)
-function renderLogs({ lines, reset, unavailable }, source) {
+// Adds what the server returned since the last poll; `reset` replaces the window's
+// contents (first read, or a server restart)
+function renderLogs({ lines, reset, unavailable }) {
     if (!reset && lines.length === 0) return;
-    // Follow new lines only once the user has scrolled to the bottom of an overflowing log;
-    // jumping there as soon as it fills would hide the session's first lines
-    const overflowing = logsBody.scrollHeight > logsBody.clientHeight;
-    const atBottom = overflowing && logsBody.scrollHeight - logsBody.scrollTop - logsBody.clientHeight < 24;
+    // Follow new lines only while the user is at the bottom, so reading further up isn't
+    // yanked away by every new line
+    const atBottom = logsBody.scrollHeight - logsBody.scrollTop - logsBody.clientHeight < 24;
 
     if (reset) {
         logsContent.replaceChildren();
@@ -540,13 +527,11 @@ function renderLogs({ lines, reset, unavailable }, source) {
     if (logLineCount === 0) {
         const el = document.createElement("div");
         el.className = "log-line log-placeholder";
-        el.textContent = unavailable || LOG_EMPTY_TEXT[source];
+        el.textContent = unavailable || "No log lines yet.";
         logsContent.replaceChildren(el);
     }
 
-    // A session reads best from its first line; the long-running logs from their newest
-    if (reset) logsBody.scrollTop = source === "session" ? 0 : logsBody.scrollHeight;
-    else if (atBottom) logsBody.scrollTop = logsBody.scrollHeight;
+    if (reset || atBottom) logsBody.scrollTop = logsBody.scrollHeight;
 }
 
 function updateStatusBadge(status, target, protocol) {

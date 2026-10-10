@@ -328,20 +328,14 @@ The image is built on LinuxServer's Selkies base, minus the parts ConnectHub nev
 
 ## Troubleshooting
 
-The **Connection Logs & Diagnostics** panel on the dashboard has three tabs, each keeping its last 1,000 lines:
+The **Logs** window on the dashboard shows everything the container logs, in order: the session's client (`xfreerdp3`, the VNC viewer or SSH, tagged `[RDP]`, `[VNC]` or `[SSH]`), ConnectHub's web server, the Selkies streaming server, the X server, audio, nginx errors and start-up. It keeps the last 2,000 lines; type in its **Filter** box to show only lines containing that text (for example `RDP`, `ERROR` or `clipboard`). Colours mark the session's client, ConnectHub's own messages, warnings and errors.
 
-| Tab | Shows |
-|---|---|
-| **Session** | Output of the running client (`xfreerdp3`, the VNC viewer or SSH) and ConnectHub's messages about it. Cleared on each connect. |
-| **ConnectHub** | The WebUI server's own log: logins, sign-ups, OIDC and profile errors. |
-| **Selkies** | The streaming server: encoder, display resizes, audio and clipboard. |
+The same lines go to `docker logs connecthub`. The dashboard's status and log requests, which repeat every 2 seconds, are left out. Inside the container the log is kept, rotated, in `/var/log/connecthub/all`.
 
-Everything also goes to `docker logs connecthub`. The dashboard's status and log requests, which repeat every 2 seconds, are left out of it.
-
-Set `CLIPBOARD_DEBUG=true` on the container to log clipboard transfers in detail: FreeRDP's clipboard channel in the **Session** tab (from the next connect) and Selkies' debug log in the **Selkies** tab (after a restart). Selkies' debug log is verbose, so turn it off again when you're done.
+Set `CLIPBOARD_DEBUG=true` on the container to log clipboard transfers in detail: FreeRDP's clipboard channel (from the next connect) and Selkies' debug log (after a restart). Selkies' debug log is verbose, so turn it off again when you're done.
 
 - **Black screen after clicking Connect**:
-  Check the **Session** tab of the **Connection Logs & Diagnostics** panel. Common reasons include incorrect Windows credentials or Remote Desktop not being enabled on the target PC.
+  Check the **Logs** window (filter on `RDP`). Common reasons include incorrect Windows credentials or Remote Desktop not being enabled on the target PC.
 - **Audio not playing**:
   Ensure the **🔊 Audio Playback** toggle is enabled before connecting, and that your browser allows autoplay on the gateway URL.
 - **Pasting an image does nothing**:

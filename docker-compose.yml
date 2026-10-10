@@ -32,7 +32,7 @@ services:
       # - IDLE_DISCONNECT_MINUTES=15
 
       # ================= Troubleshooting =================
-      # Log clipboard transfers (FreeRDP and Selkies) in the dashboard's Connection Logs.
+      # Log clipboard transfers (FreeRDP and Selkies) in the dashboard's Logs window.
       # Selkies' debug log is verbose; leave this off otherwise.
       # - CLIPBOARD_DEBUG=true
 

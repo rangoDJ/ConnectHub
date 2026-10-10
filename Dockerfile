@@ -108,16 +108,8 @@ RUN mkdir -p /shared /config /app/backend /app/frontend
 COPY scripts/patch_selkies.py /tmp/patch_selkies.py
 RUN python3 /tmp/patch_selkies.py && rm -f /tmp/patch_selkies.py
 
-# Selkies' output goes through s6-log (svc-selkies-log, from root/ below) so the dashboard
-# can show it. Its run script gets a prelude that sends stderr down that pipe too. Stops
-# the build if the base image ever pipes svc-selkies somewhere itself, since two
-# producer-for files would otherwise only fail when the container starts.
-COPY scripts/selkies-run-prelude.sh /tmp/selkies-run-prelude.sh
-RUN run=/etc/s6-overlay/s6-rc.d/svc-selkies/run \
-    && head -n1 "$run" | grep -q '^#!' \
-    && test ! -e /etc/s6-overlay/s6-rc.d/svc-selkies/producer-for \
-    && sed -i '1r /tmp/selkies-run-prelude.sh' "$run" \
-    && rm -f /tmp/selkies-run-prelude.sh
+# nginx's errors go to the container output with everything else (see connecthub-init)
+RUN ln -sf /dev/stderr /var/log/nginx/error.log
 
 # Copy root configuration files
 COPY root/ /
@@ -126,10 +118,10 @@ COPY root/ /
 RUN chmod +x \
     /defaults/autostart \
     /etc/s6-overlay/s6-rc.d/02-rdp-webui/run \
-    /etc/s6-overlay/s6-rc.d/svc-selkies-log/run
+    /usr/local/bin/connecthub-init
 
-# Compile the service tree as the container would at start, so a broken service or
-# pipeline (like the svc-selkies -> svc-selkies-log one above) fails the build instead
+# Compile the service tree as the container would at start, so a broken service
+# fails the build instead
 RUN /command/s6-rc-compile /tmp/s6-rc-check \
         /package/admin/s6-overlay/etc/s6-rc/sources \
         /etc/s6-overlay/s6-rc.d \
@@ -153,4 +145,5 @@ VOLUME ["/config", "/shared"]
 # Port 3000 (HTTP) and 3001 (HTTPS, self-signed) serve the WebUI, API, and Selkies stream
 EXPOSE 3000 3001
 
-ENTRYPOINT ["/init"]
+# Copies all container output into the log file the dashboard shows, then runs /init
+ENTRYPOINT ["/usr/local/bin/connecthub-init"]

@@ -8,8 +8,6 @@ import logging
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, List, Tuple
 
-from log_buffer import BufferLogHandler, LogBuffer
-
 logger = logging.getLogger("session_manager")
 
 SHARED_DIR = os.environ.get("SHARED_DIR", "/shared")
@@ -106,18 +104,12 @@ def idle_disconnect_seconds() -> int:
     return max(minutes, 0) * 60
 
 
-# This module's messages go into the session log next to the client's own output
-PANEL_LOG_FORMAT = "[%(asctime)s] [%(levelname)s][connecthub] %(message)s"
-
-
 class SessionManager:
     def __init__(self):
         self.process: Optional[subprocess.Popen] = None
         self.protocol: Optional[str] = None
         self.status: str = "disconnected" # disconnected, connecting, connected, error
         self.last_error: Optional[str] = None
-        # The Session tab of the dashboard's Connection Logs panel
-        self.log = LogBuffer()
         self.current_target: Optional[str] = None
         self.start_time: Optional[float] = None
         # When a dashboard last asked for the status (time.monotonic()); see mark_seen
@@ -128,7 +120,6 @@ class SessionManager:
         self._pending_connect: Optional[object] = None
         self.rdp_binary = "xfreerdp"
         self.supports_args_from = False
-        logger.addHandler(BufferLogHandler(self.log, PANEL_LOG_FORMAT))
         self._find_xfreerdp_binary()
 
     def _find_xfreerdp_binary(self):
@@ -396,9 +387,11 @@ class SessionManager:
     def _monitor_process(self, proc: subprocess.Popen, launch: Launch, protocol: str):
         error_line = None
         last_line = None
+        tag = protocol.upper()
         for line in iter(proc.stdout.readline, ''):
-            self.log.append(line)
+            # Into the container's output, which the dashboard's log window shows
             if line.strip():
+                print(f"[{tag}] {line.rstrip()}", flush=True)
                 last_line = line.strip()
             if protocol == "rdp" and any(marker in line for marker in RDP_ERROR_MARKERS):
                 error_line = line.strip()
@@ -479,7 +472,6 @@ class SessionManager:
             # status says disconnected, and the stream is what sizes the display we wait on
             attempt = object()
             self._pending_connect = attempt
-            self.log.clear()
             self.last_error = None
             self.protocol = protocol
             self.current_target = f"{config['host']}:{config['port']}"

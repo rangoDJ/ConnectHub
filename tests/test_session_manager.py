@@ -4,7 +4,6 @@ import io
 import pytest
 
 import session_manager as sm
-from log_buffer import LogBuffer
 
 
 @pytest.fixture
@@ -14,7 +13,6 @@ def mgr(monkeypatch):
     manager.protocol = None
     manager.status = "disconnected"
     manager.last_error = None
-    manager.log = LogBuffer()
     manager.current_target = None
     manager.start_time = None
     manager.last_seen = sm.time.monotonic()
@@ -143,19 +141,6 @@ def test_missing_host_is_refused(mgr):
 
 
 # ----------------- Log ring buffer -----------------
-
-def test_log_history_is_capped(mgr):
-    mgr.log.max_lines = 10
-    for i in range(50):
-        mgr.log.append(f"line {i}")
-    assert len(mgr.log.lines()) == 10
-    assert mgr.log.lines()[-1] == "line 49"
-
-
-def test_blank_log_lines_are_dropped(mgr):
-    mgr.log.append("   \n")
-    assert mgr.log.lines() == []
-
 
 # ----------------- Window watchdog -----------------
 
@@ -358,59 +343,37 @@ def test_second_connect_while_one_is_starting_is_refused(mgr, monkeypatch):
     assert "already starting" in results[0]["message"]
 
 
-# ----------------- Dashboard log panel -----------------
+# ----------------- Client output -----------------
 
-@pytest.fixture
-def panel(mgr):
-    """Route session_manager's log messages into mgr's panel log for the test."""
-    handler = sm.BufferLogHandler(mgr.log, sm.PANEL_LOG_FORMAT)
-    sm.logger.addHandler(handler)
-    previous = sm.logger.level
-    sm.logger.setLevel(sm.logging.INFO)
-    yield mgr
-    sm.logger.removeHandler(handler)
-    sm.logger.setLevel(previous)
-
-
-def test_connecthub_messages_reach_the_panel(panel):
-    sm.logger.info("Display settled at (2880, 1472); starting the session")
-    assert len(panel.log.lines()) == 1
-    line = panel.log.lines()[0]
-    assert "[INFO][connecthub]" in line
-    assert "Display settled" in line
+class OutputProc:
+    """A client that printed some lines and exited."""
+    pid = 4545
+    def __init__(self, text):
+        self.stdout = io.StringIO(text)
+    def poll(self):
+        return 0
+    def wait(self):
+        return 0
 
 
-def test_logging_while_holding_the_session_lock_does_not_deadlock(panel):
-    """connect() logs inside `with self.lock`; the panel must not need that lock."""
-    done = sm.threading.Event()
-
-    def log_under_lock():
-        with panel.lock:
-            sm.logger.warning("logged while locked")
-        done.set()
-
-    t = sm.threading.Thread(target=log_under_lock, daemon=True)
-    t.start()
-    assert done.wait(2), "deadlocked appending a log line under the session lock"
-    assert "logged while locked" in panel.log.lines()[-1]
+def test_client_output_goes_to_the_container_output_tagged(mgr, capsys):
+    """The dashboard's log window reads the container output, so the client writes there."""
+    proc = OutputProc("[WARN][com.freerdp] something\n\nconnected\n")
+    mgr.process = proc
+    mgr._monitor_process(proc, sm.Launch(cmd=[], target="pc:3389"), "rdp")
+    assert capsys.readouterr().out.splitlines() == ["[RDP] [WARN][com.freerdp] something", "[RDP] connected"]
 
 
-def test_connect_messages_survive_the_log_reset(panel, monkeypatch):
-    """The log is cleared at the start of each connect; its own messages come after that."""
-    panel.log.append("line from the previous session")
-    monkeypatch.setattr(panel, "_wait_for_display_to_settle", lambda: sm.logger.info("Display settled"))
-    monkeypatch.setattr(sm.subprocess, "Popen", lambda *a, **k: (_ for _ in ()).throw(OSError("no client")))
-    panel.connect({"protocol": "vnc", "host": "10.0.0.5"})
-    text = "\n".join(panel.log.lines())
-    assert "previous session" not in text
-    assert "Display settled" in text
-    assert "Starting VNC session to 10.0.0.5:5900" in text
-    assert "Failed to launch VNC client" in text
+def test_rdp_errors_in_the_client_output_are_still_reported(mgr, capsys):
+    proc = OutputProc("ERRCONNECT_LOGON_FAILURE [0x00020014]\n")
+    mgr.process = proc
+    mgr._monitor_process(proc, sm.Launch(cmd=[], target="pc:3389"), "rdp")
+    assert mgr.status == "error"
+    assert "ERRCONNECT_LOGON_FAILURE" in mgr.last_error
 
 
 def test_status_no_longer_carries_the_log(mgr):
-    """The panel reads the log from /api/logs/session, so the status poll stays small."""
-    mgr.log.append("line")
+    """The panel reads the log from /api/logs, so the status poll stays small."""
     assert "recent_logs" not in mgr.get_status()
 
 
@@ -461,15 +424,16 @@ def idle_clock(monkeypatch):
     return now
 
 
-def test_session_is_disconnected_once_no_dashboard_polls(panel, idle_clock):
+def test_session_is_disconnected_once_no_dashboard_polls(mgr, idle_clock, caplog):
     proc = RunningProc()
-    panel.process = proc
-    panel.status = "connected"
-    panel.mark_seen()
-    panel._watch_idle(proc, 600)
+    mgr.process = proc
+    mgr.status = "connected"
+    mgr.mark_seen()
+    with caplog.at_level(sm.logging.INFO, logger="session_manager"):
+        mgr._watch_idle(proc, 600)
     assert proc.terminated
-    assert panel.status == "disconnected"
-    assert "IDLE_DISCONNECT_MINUTES" in panel.log.lines()[-2]
+    assert mgr.status == "disconnected"
+    assert any("IDLE_DISCONNECT_MINUTES" in r.getMessage() for r in caplog.records)
     assert idle_clock[0] - 5000.0 == pytest.approx(600, abs=sm.IDLE_CHECK_SECONDS)
 
 
