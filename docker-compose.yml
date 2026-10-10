@@ -57,6 +57,11 @@ services:
       # Required: IPs/CIDRs of your reverse proxy, e.g. 172.18.0.0/16. Other sources cannot set the header.
       - FORWARD_AUTH_TRUSTED_PROXIES=${FORWARD_AUTH_TRUSTED_PROXIES:-}
 
+      # Behind a reverse proxy or tunnel (Cloudflare, Traefik, nginx...): its IPs/CIDRs, e.g. the
+      # Docker network it shares with ConnectHub. Logins are then rate-limited and logged per
+      # visitor instead of all as the proxy. Leave empty when ConnectHub is reached directly.
+      - TRUSTED_PROXIES=${TRUSTED_PROXIES:-}
+
       # Session cookie Secure flag: auto (follows https), true, false
       - COOKIE_SECURE=${COOKIE_SECURE:-auto}
 
