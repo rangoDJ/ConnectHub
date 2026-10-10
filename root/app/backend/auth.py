@@ -345,6 +345,11 @@ def _cookie_secure(request: Optional[Request]) -> bool:
     if request is None:
         return False
     proto = request.headers.get("X-Forwarded-Proto", request.url.scheme)
+    # nginx sets X-Forwarded-Proto to its own scheme, which is http when a TLS-terminating
+    # proxy or tunnel talks plain HTTP to it. From a trusted proxy, use what that proxy received.
+    upstream = request.headers.get("X-Proxy-Forwarded-Proto")
+    if upstream and _in_networks(peer_ip(request), PROXY_NETS):
+        proto = upstream
     return proto.split(",")[0].strip().lower() == "https"
 
 def create_session_cookie(response: Response, user_data: dict, request: Optional[Request] = None):
