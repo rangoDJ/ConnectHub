@@ -1,6 +1,10 @@
 # syntax=docker/dockerfile:1
 # ubuntunoble stopped receiving builds in June 2026; its older Selkies rejects h264enc
-FROM ghcr.io/linuxserver/baseimage-selkies:ubunturesolute AS base
+# Pinned by digest: the floating tag moved and restructured the Selkies web bundle, so
+# scripts/patch_selkies.py no longer matched and every build failed. This is the last
+# digest that built green (2026-10-10). Unpin once the patch script is updated for the
+# newer bundle; until then the base gets no upstream updates, security ones included.
+FROM ghcr.io/linuxserver/baseimage-selkies:ubunturesolute@sha256:e73f4ce644db0e9ba8deb33f03b559c880e3e3eec78046252a178c2ee3c2b6f6 AS base
 
 # Strip what ConnectHub never uses from the base: Docker-in-Docker, compilers, all but one
 # locale, CJK serif fonts (~800 MB). Deleting files in a later layer can't shrink an
