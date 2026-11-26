@@ -1,10 +1,9 @@
-"""scripts/patch_selkies.py against a stand-in for the minified Selkies bundle.
+"""scripts/patch_selkies.py against stand-ins for the Selkies files it patches.
 
-The stand-in is createClipboardGestures from selkies-web-core/lib/clipboard-sync.js
-(the release still using getDeferredWriteInFlight), minified by hand with the same
-names as the real bundle, so it contains every string the patch script looks for.
-With Node installed the patched code is also run, since a patch can apply cleanly and
-still throw in the browser.
+The client stand-in is readLocalClipboard from Selkies 2.2's selkies-core.js, verbatim,
+so it holds the exact string the one remaining client patch looks for. With Node
+installed the patched code is also run, since a patch can apply cleanly and still throw
+in the browser.
 """
 import importlib.util
 import json
@@ -19,113 +18,43 @@ _spec = importlib.util.spec_from_file_location("patch_selkies", SCRIPT)
 patch_selkies = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(patch_selkies)
 
-# The key handler's locals: t=modHold, n=chord, r=writeInFlight, i=hold. They shadow
-# ft's canSync (r) and canRead (i).
+# readLocalClipboard (Yt) from Selkies 2.2's selkies-core.js, verbatim. The patch target
+# appears twice in it; only the first, the catch around navigator.clipboard.read(), is
+# meant to be replaced.
 BUNDLE = (
-    # The local clipboard read, verbatim
-    "async function rt(e){let t=async()=>{let e=await navigator.clipboard.readText().catch(()=>``);return e?{kind:`text`,text:e}:null};if(!e){let e=await navigator.clipboard.readText();return e?{kind:`text`,text:e}:null}let n;try{n=await navigator.clipboard.read()}catch(e){if(e&&e.name===`DataError`)return t();throw e}if(!n||n.length===0)return null;let r=n[0],i=r.types.find(e=>e.startsWith(`image/`));try{if(i)return{kind:`image`,blob:await r.getType(i),mime:i};if(r.types.includes(`text/html`)){let e=await(await r.getType(`text/html`)).text(),t=r.types.includes(`text/plain`)?await(await r.getType(`text/plain`)).text():``;if(e)return{kind:`flavours`,html:e,text:t}}if(r.types.includes(`text/plain`)){let e=await(await r.getType(`text/plain`)).text();return e?{kind:`text`,text:e}:null}}catch(e){if(e&&e.name===`DataError`)return t();throw e}return null}\n"
-
-    "function ft({isChromium:e,clipboardSync:t,sendClipboardData:n,canSync:r,canRead:i,canWrite:a,"
-    "binaryEnabled:o,getSendInFlight:s,getDeferredWriteInFlight:c}){"
-    "function l(){let e=document.activeElement;return!!(e&&e.id!==`overlayInput`&&(e.tagName===`INPUT`"
-    "||e.tagName===`TEXTAREA`||e.tagName===`SELECT`||e.isContentEditable))}"
-    "let u=[],d=!1,f=1e4;"
-    "function p(){d=!1;for(let e of u.splice(0))try{let t=new KeyboardEvent(e.type,e);"
-    "Object.defineProperty(t,`__selkiesClipReplay`,{value:!0}),window.dispatchEvent(t)}catch{}}"
-    "function m(){for(let e=u.length-1;e>=0;e--)u[e].type===`keydown`&&u.splice(e,1);p()}"
-    "let pm=[`ControlLeft`,`ControlRight`,`MetaLeft`,`MetaRight`];"
-    "function h(e){if(e.__selkiesClipReplay)return;"
-    "let t=d&&e.type===`keyup`&&pm.includes(e.code);"
-    "if(e.code!==`KeyV`&&!t)return;let n=(e.ctrlKey||e.metaKey)&&!e.altKey,r=c?c():null;"
-    "let i=t||e.code===`KeyV`&&(n&&(s()||r)||d);if(!i)return;"
-    "e.preventDefault(),e.stopImmediatePropagation(),u.push(e);"
-    "if(!d){d=!0;let t=performance.now(),n=()=>{let e=[],r=s();r&&e.push(r);let i=c?c():null;"
-    "if(i&&e.push(i),e.length===0){p();return}let a=f-(performance.now()-t);if(a<=0){m();return}"
-    "Promise.race([Promise.all(e).then(()=>`settled`,()=>`failed`),"
-    "new Promise(e=>setTimeout(()=>e(`timeout`),a))]).then(e=>{e===`settled`?n():m()})};n()}}"
-    "function ee(e){}"
-    # The paste handler, verbatim
-    "function te(e){if(!r()||!i()||l())return;let t=e.clipboardData;if(!t)return;if(o()&&t.items)for(let e=0;e<t.items.length;e++){let r=t.items[e];if(r.kind===`file`&&r.type&&r.type.startsWith(`image/`)){let e=r.getAsFile();if(e){e.arrayBuffer().then(e=>n(e,r.type)).catch(e=>console.warn(`Paste image read failed: ${e&&e.name}`));return}}}let a=t.getData(`text/plain`);a&&n(a)}"
-    "function g(){window.addEventListener(`keydown`,h,!0),window.addEventListener(`keyup`,h,!0),"
-    "e||(window.addEventListener(`keydown`,ee,!0),window.addEventListener(`paste`,te,!0))}"
-    "function ne(){window.removeEventListener(`keydown`,h,!0),window.removeEventListener(`keyup`,h,!0),"
-    "e||(window.removeEventListener(`keydown`,ee,!0),window.removeEventListener(`paste`,te,!0))}"
-    "return{wire:g,unwire:ne}}\n"
-
-    # The WebSocket handler's end of a chunked clipboard transfer, verbatim
-    "function onClipboardFinish(a){if(a.data===`clipboard_finish`){if(yn.inProgress){if(console.log(`Finished multi-part clipboard download. Received ${yn.receivedSize} of ${yn.totalSize} bytes.`),yn.receivedSize!==yn.totalSize)console.error(`Multipart clipboard size mismatch. Aborting.`),yn.reset();else{let e=Dn(),t=yn.mimeType;yn.finish().then(({result:n,hash:r,byteLength:i})=>{if(t===`text/plain`){let t=n,r=_n.shouldSend(t,`text/plain`);_n.resolveServer(t,null,`text/plain`),!e&&W&&r&&vn.write(()=>navigator.clipboard.writeText(t),{onFailure:e=>console.error(`Could not copy server clipboard text to local: `+e)}),window.postMessage(ut(t),window.location.origin)}else if(W&&hn){let a=new Blob([n],{type:t}),o=Je(i,r),s=_n.shouldSend(o,t);_n.resolveServer(void 0,a,t,o),!e&&s&&vn.write(()=>Ze(a,t,mn),{onSuccess:()=>{console.log(`Successfully wrote multi-part image (${t}) from server to local clipboard.`),_n.captureLocalImageSig();let e=`Image (${t}) received from session and copied to clipboard.`;window.postMessage({type:`clipboardContentUpdate`,text:e},window.location.origin)},onFailure:uo})}}).catch(e=>{console.error(`Error assembling final clipboard content:`,e)})}}}}\n"
-
-    # WebRTC call site; the test drives this instance
-    "globalThis.G=ft({isChromium:H.isChromium,clipboardSync:{},sendClipboardData:()=>{},"
-    "canSync:()=>!0,canRead:()=>!0,canWrite:()=>!0,binaryEnabled:()=>!0,"
-    "getSendInFlight:()=>hr.getSendInFlight(),"
-    "getDeferredWriteInFlight:()=>z.getInFlight()});async function yr(){}\n"
-    # WebSocket call site, never run here
-    "function wsInit(){ft({isChromium:!0,getSendInFlight:()=>null,"
-    "getDeferredWriteInFlight:()=>vn.getInFlight()}).wire();let b=()=>{}}\n"
+    "async function Yt(e){let t=async()=>{let e=await navigator.clipboard.readText()"
+    ".catch(()=>``);return e?{kind:`text`,text:e}:null};if(!e){let e=await navigator"
+    ".clipboard.readText();return e?{kind:`text`,text:e}:null}let n;try{n=await navigator"
+    ".clipboard.read()}catch(e){if(e&&e.name===`DataError`)return t();throw e}"
+    "if(!n||n.length===0)return null;let r=n[0],i=r.types.find(e=>e.startsWith(`image/`));"
+    "try{let e=r.types.includes(`text/html`)?await(await r.getType(`text/html`)).text():``;"
+    "if(i&&!Jt(e).trim())return{kind:`image`,blob:await r.getType(i),mime:i};"
+    "if(e)return{kind:`flavours`,html:e,text:r.types.includes(`text/plain`)?"
+    "await(await r.getType(`text/plain`)).text():``};"
+    "if(r.types.includes(`text/plain`)){let e=await(await r.getType(`text/plain`)).text();"
+    "return e?{kind:`text`,text:e}:null}}catch(e){if(e&&e.name===`DataError`)return t();"
+    "throw e}return null}\n"
 )
 
-# Browser stand-ins and a local clipboard sender whose send the test settles by hand
+# A clipboard whose binary read fails with the name the test picks, and whose text read
+# answers. Jt strips markup in the real bundle; nothing here depends on how.
 PRELUDE = r"""
-const listeners = {};
-globalThis.window = {
-    addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
-    removeEventListener() {},
-    dispatchEvent(ev) { for (const fn of listeners[ev.type] || []) { fn(ev); if (ev._stopped) break; } },
-    isSecureContext: H.secure,
-};
-globalThis.document = { activeElement: H.activeElement };
-// Node has its own read-only navigator; the clipboard-read permission state is the test's
+function Jt(s) { return String(s || "").replace(/<[^>]*>/g, ""); }
+// Node has its own read-only navigator, so it has to be replaced rather than assigned
 Object.defineProperty(globalThis, "navigator", { configurable: true, value: {
-    permissions: { query: async () => ({ state: H.permission }) },
-} });
-globalThis.KeyboardEvent = class {
-    constructor(type, init = {}) {
-        this.type = type;
-        for (const k of ["code", "ctrlKey", "metaKey", "altKey", "repeat"]) this[k] = init[k];
-    }
-    preventDefault() { this.defaultPrevented = true; }
-    stopImmediatePropagation() { this._stopped = true; }
-};
-let inflight = null, settle = null, reads = 0;
-const hr = {
-    getSendInFlight: () => inflight,
-    readAndSend() {
-        reads++;
-        inflight = new Promise(r => { settle = r; }).then(() => { inflight = null; });
-        return inflight;
+    clipboard: {
+        read: async () => { const e = new Error("refused"); e.name = H.readError; throw e; },
+        readText: async () => H.text,
     },
-};
-const On = hr, z = { getInFlight: () => null }, vn = z;
+} });
 """
 
 DRIVER = r"""
-const reached = [];
-G.wire();
-window.addEventListener("keydown", ev => reached.push(ev.code)); // the input stack
-const result = { error: null };
-(async () => {
-    await new Promise(r => setTimeout(r, 0)); // the permission query has answered
-    try {
-        window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyV", ctrlKey: true }));
-    } catch (e) {
-        result.error = `${e.name}: ${e.message}`;
-    }
-    result.reads = reads;
-    result.reachedWhileSending = reached.slice();
-    if (settle) settle();
-    for (let i = 0; i < 10; i++) await new Promise(r => setTimeout(r, 0));
-    result.reachedAfterSend = reached.slice();
-    console.log(JSON.stringify(result));
-})();
+Yt(true).then(
+    result => console.log(JSON.stringify({ error: null, result })),
+    e => console.log(JSON.stringify({ error: e.name, result: null })),
+);
 """
-
-# Patch 3 as first shipped: reads r() and i() above the handler's own `let r`/`let i`
-ORIGINAL_PATCH_3 = (
-    "if(e.code!==`KeyV`&&!t)return;let n=(e.ctrlKey||e.metaKey)&&!e.altKey;"
-    "if(e.type===`keydown`&&e.code===`KeyV`&&n&&!l()&&r()&&i()&&!s()&&R)try{R()}catch{}"
-    "let r=c?c():null;"
-)
 
 
 def patched(tmp_path) -> str:
@@ -135,26 +64,25 @@ def patched(tmp_path) -> str:
     return target.read_text(encoding="utf-8")
 
 
-def run(code: str, is_chromium=True, active_element=None, secure=True, permission="granted"):
+def run(code: str, read_error: str, text: str = "from the clipboard"):
     if not shutil.which("node"):
         pytest.skip("node not installed")
-    hooks = {
-        "isChromium": is_chromium,
-        "activeElement": active_element or {"id": "overlayInput", "tagName": "TEXTAREA"},
-        "secure": secure,
-        "permission": permission,
-    }
+    hooks = {"readError": read_error, "text": text}
     source = f"const H = {json.dumps(hooks)};\n{PRELUDE}\n{code}\n{DRIVER}"
     out = subprocess.run(["node", "-e", source], capture_output=True, text=True, timeout=30)
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout.strip().splitlines()[-1])
 
 
-def test_every_pattern_matches_the_bundle(tmp_path):
+def test_the_client_pattern_matches_the_bundle(tmp_path):
+    assert "`NotAllowedError`" in patched(tmp_path)
+
+
+def test_only_the_binary_read_catch_is_patched(tmp_path):
+    """The target appears twice; the trailing catch is left as upstream wrote it."""
     code = patched(tmp_path)
-    assert "readAndSend:__chReadAndSend=null" in code
-    assert "readAndSend:()=>hr.readAndSend()" in code
-    assert "readAndSend:()=>On.readAndSend()" in code
+    assert code.count("e.name===`NotAllowedError`") == 1
+    assert code.count("catch(e){if(e&&e.name===`DataError`)return t();throw e}") == 1
 
 
 def test_patching_twice_is_a_no_op(tmp_path):
@@ -164,60 +92,38 @@ def test_patching_twice_is_a_no_op(tmp_path):
     assert target.read_text(encoding="utf-8") == once
 
 
-def test_ctrl_v_reads_the_clipboard_and_holds_v_until_it_is_sent(tmp_path):
-    result = run(patched(tmp_path))
+def test_a_refused_read_falls_back_to_text(tmp_path):
+    """Chromium refuses a read taken while the document is not focused; readText still
+    answers, so a copy is not lost just because focus moved."""
+    result = run(patched(tmp_path), "NotAllowedError")
     assert result["error"] is None
-    assert result["reads"] == 1
-    # V reaches the session only after the clipboard it pastes has
-    assert result["reachedWhileSending"] == []
-    assert result["reachedAfterSend"] == ["KeyV"]
+    assert result["result"] == {"kind": "text", "text": "from the clipboard"}
 
 
-def test_original_patch_threw_on_ctrl_v(tmp_path):
-    """Pins the regression: the first version of patch 3 hit the TDZ of the key
-    handler's own `r`, so every Ctrl+V threw and the paste hold never ran."""
-    code = BUNDLE.replace(
-        "if(e.code!==`KeyV`&&!t)return;let n=(e.ctrlKey||e.metaKey)&&!e.altKey,r=c?c():null;",
-        ORIGINAL_PATCH_3,
-    ).replace("getDeferredWriteInFlight:c}){", "getDeferredWriteInFlight:c,readAndSend:R=null}){")
-    result = run(code)
-    assert result["error"] is not None and "ReferenceError" in result["error"]
-    assert result["reads"] == 0
+def test_an_unpatched_refused_read_is_lost(tmp_path):
+    """Pins what the patch is for: upstream rethrows, so the clipboard never arrives."""
+    result = run(BUNDLE, "NotAllowedError")
+    assert result["error"] == "NotAllowedError"
+    assert result["result"] is None
 
 
-def test_no_keydown_read_outside_chromium(tmp_path):
-    """Firefox would raise its paste prompt; its paste event carries the clipboard."""
-    result = run(patched(tmp_path), is_chromium=False)
+def test_an_undecodable_read_still_falls_back(tmp_path):
+    """Upstream's own DataError fallback keeps working."""
+    result = run(patched(tmp_path), "DataError")
     assert result["error"] is None
-    assert result["reads"] == 0
+    assert result["result"]["kind"] == "text"
 
 
-def test_no_read_while_typing_in_a_page_form_field(tmp_path):
-    result = run(patched(tmp_path), active_element={"id": "settings-name", "tagName": "INPUT"})
+def test_other_read_errors_still_propagate(tmp_path):
+    """Only the two named failures fall back; anything else is a real error."""
+    result = run(patched(tmp_path), "SecurityError")
+    assert result["error"] == "SecurityError"
+
+
+def test_empty_clipboard_reads_as_nothing(tmp_path):
+    result = run(patched(tmp_path), "NotAllowedError", text="")
     assert result["error"] is None
-    assert result["reads"] == 0
-
-
-def test_no_keydown_read_without_https(tmp_path):
-    """Without navigator.clipboard the read fails, and the hold it starts would cancel
-    the keydown and so the paste event, the one path that carries the image there."""
-    result = run(patched(tmp_path), secure=False)
-    assert result["error"] is None
-    assert result["reads"] == 0
-    assert result["reachedWhileSending"] == ["KeyV"]
-
-
-def test_no_keydown_read_when_clipboard_read_is_denied(tmp_path):
-    result = run(patched(tmp_path), permission="denied")
-    assert result["error"] is None
-    assert result["reads"] == 0
-    assert result["reachedWhileSending"] == ["KeyV"]
-
-
-def test_first_use_still_reads_so_chromium_can_ask(tmp_path):
-    result = run(patched(tmp_path), permission="prompt")
-    assert result["reads"] == 1
-
+    assert result["result"] is None
 
 # ----------------- Server -----------------
 
@@ -403,42 +309,6 @@ def test_patching_the_server_twice_is_a_no_op(tmp_path):
     assert patch_selkies.patch_file(str(target), patch_selkies.SERVER_REPLACEMENTS)
     assert target.read_text(encoding="utf-8") == once
 
-
-# ----------------- Server: copies with text go as text -----------------
-
-def read(server, offered, use_binary=True):
-    return server._X11ClipboardMonitor(offered).read(use_binary)
-
-
-def test_an_excel_copy_goes_as_its_text_and_markup_not_a_picture(server):
-    """Excel offers a picture of the cells beside their text and HTML."""
-    data, mime = read(server, {
-        "image/png": b"\x89PNG...", "image/bmp": b"BM...",
-        "text/html": b"<table><tr><td>1</td><td>2</td></tr></table>",
-        "UTF8_STRING": b"1\t2\r\n",
-    })
-    assert mime == server.CLIPBOARD_FLAVOURS_MIME
-    assert json.loads(data) == {"text/html": "<table><tr><td>1</td><td>2</td></tr></table>",
-                                "text/plain": "1\t2\r\n"}
-
-
-def test_plain_text_beside_a_picture_goes_as_text(server):
-    assert read(server, {"image/bmp": b"BM...", "UTF8_STRING": b"cell"}) == ("cell", "text/plain")
-
-
-def test_a_picture_only_copy_still_goes_as_an_image(server):
-    """A screenshot or "Copy image": no text, so the picture is the copy."""
-    assert read(server, {"image/png": b"PNGDATA", "text/html": b"<img src=x>"}) == (b"PNGDATA", "image/png")
-
-
-def test_blank_text_beside_a_picture_does_not_count(server):
-    assert read(server, {"image/png": b"PNGDATA", "UTF8_STRING": b" \r\n"}) == (b"PNGDATA", "image/png")
-
-
-def test_text_only_copies_are_unchanged(server):
-    assert read(server, {"UTF8_STRING": b"hello"}) == ("hello", "text/plain")
-
-
 # ----------------- Server: the browser's echo of the session's own copy -----------------
 
 def receive(server, handler, data, mime_type="text/plain", flavours=None):
@@ -504,142 +374,3 @@ def test_nothing_is_skipped_before_the_session_has_a_clipboard(server):
     handler = server.Handler()
     assert receive(server, handler, "first") == [("text/plain", b"first")]
 
-
-# ----------------- Client: local copies with text go as text -----------------
-
-def run_script(code: str, script: str):
-    """Run the patched bundle, then `script`, which prints one JSON line."""
-    if not shutil.which("node"):
-        pytest.skip("node not installed")
-    hooks = {"isChromium": True, "activeElement": {"id": "overlayInput", "tagName": "TEXTAREA"},
-             "secure": True, "permission": "granted"}
-    source = f"const H = {json.dumps(hooks)};\n{PRELUDE}\n{code}\n(async () => {{\n{script}\n}})();"
-    # On stdin: a long script overflows the Windows command line
-    out = subprocess.run(["node", "-"], input=source, capture_output=True, text=True, timeout=30)
-    assert out.returncode == 0, out.stderr
-    return json.loads(out.stdout.strip().splitlines()[-1])
-
-
-def local_read(code, types):
-    """rt(binary) on a local clipboard item offering `types` ({mime: text})."""
-    return run_script(code, f"""
-const types = {json.dumps(types)};
-navigator.clipboard = {{ read: async () => [{{
-    types: Object.keys(types),
-    getType: async t => ({{ text: async () => types[t], size: types[t].length }}),
-}}] }};
-const got = await rt(true);
-console.log(JSON.stringify(got && {{ kind: got.kind, mime: got.mime || null, text: got.text || null }}));
-""")
-
-
-OFFICE_COPY = {"image/png": "PNG", "text/html": "<table><tr><td>1</td></tr></table>", "text/plain": "1\r\n"}
-
-
-def test_a_local_office_copy_is_read_as_markup_not_a_picture(tmp_path):
-    assert local_read(patched(tmp_path), OFFICE_COPY) == {"kind": "flavours", "mime": None, "text": "1\r\n"}
-
-
-def test_original_client_read_an_office_copy_as_a_picture(tmp_path):
-    """The bug patch 8 fixes."""
-    assert local_read(BUNDLE, OFFICE_COPY)["kind"] == "image"
-
-
-def test_a_local_picture_is_still_read_as_an_image(tmp_path):
-    got = local_read(patched(tmp_path), {"image/png": "PNG", "text/html": "<img src=x>"})
-    assert got == {"kind": "image", "mime": "image/png", "text": None}
-
-
-def test_blank_text_beside_a_local_picture_does_not_count(tmp_path):
-    assert local_read(patched(tmp_path), {"image/png": "PNG", "text/plain": " \n"})["kind"] == "image"
-
-
-def paste(code, text):
-    """A paste event carrying a picture file and `text`; what the client sends."""
-    return run_script(code, f"""
-const sent = [];
-const P = ft({{isChromium: !0, clipboardSync: {{}}, sendClipboardData: (d, m) => sent.push(typeof d === "string" ? ["text", d] : ["bytes", m]),
-    canSync: () => !0, canRead: () => !0, canWrite: () => !0, binaryEnabled: () => !0,
-    getSendInFlight: () => null, getDeferredWriteInFlight: () => null}});
-P.wire();
-window.dispatchEvent({{ type: "paste", clipboardData: {{
-    items: [{{ kind: "file", type: "image/png", getAsFile: () => ({{ arrayBuffer: async () => new ArrayBuffer(3) }}) }}],
-    getData: t => t === "text/plain" ? {json.dumps(text)} : "",
-}} }});
-for (let i = 0; i < 5; i++) await new Promise(r => setTimeout(r, 0));
-console.log(JSON.stringify(sent));
-""")
-
-
-def test_a_pasted_office_copy_is_sent_as_text(tmp_path):
-    assert paste(patched(tmp_path), "1\t2") == [["text", "1\t2"]]
-
-
-def test_a_pasted_picture_is_still_sent_as_an_image(tmp_path):
-    assert paste(patched(tmp_path), "") == [["bytes", "image/png"]]
-
-
-# ----------------- Client: chunked copies with markup -----------------
-
-FLAVOURS = "application/x-selkies-clipboard-flavours"
-
-
-def finish_chunked(code, mime, payload):
-    """End a chunked transfer of `payload` (str) as `mime`; what the client writes locally."""
-    return run_script(code, f"""
-const written = [];
-globalThis.Qe = {json.dumps(FLAVOURS)};
-globalThis.et = b => {{ const o = JSON.parse(new TextDecoder().decode(b)); return {{ html: o["text/html"] || "", text: o["text/plain"] || "" }}; }};
-globalThis.nt = f => {{ written.push(["markup", f.html, f.text]); return Promise.resolve(); }};
-globalThis.ut = x => ({{ type: "clipboardContentUpdate", text: x }});
-globalThis.Je = (n, h) => ({{ __clipDigest: true, byteLength: n, hash: h }});
-globalThis._n = {{ shouldSend: () => true, resolveServer() {{}}, captureLocalImageSig() {{}} }};
-vn.write = (fn, cb) => Promise.resolve().then(fn).then(() => cb && cb.onSuccess && cb.onSuccess(), err => cb && cb.onFailure && cb.onFailure(err));  // vn is the prelude's
-globalThis.Ze = (blob, mime) => Promise.reject(new Error("not an image: " + mime));
-globalThis.uo = err => written.push(["failed", String(err.message || err)]);
-globalThis.W = true; globalThis.hn = true; globalThis.Xt = true; globalThis.mn = null;
-globalThis.Dn = () => false;
-window.postMessage = () => {{}};
-globalThis.location = {{ origin: "https://hub" }}; window.location = globalThis.location;
-navigator.clipboard = {{ writeText: async x => written.push(["text", x]) }};
-const payload = new TextEncoder().encode({json.dumps(payload)});
-globalThis.yn = {{ inProgress: true, mimeType: {json.dumps(mime)}, receivedSize: payload.length, totalSize: payload.length,
-    finish: async () => ({{ result: payload.buffer, hash: 1, byteLength: payload.length }}) }};
-onClipboardFinish({{ data: "clipboard_finish" }});
-for (let i = 0; i < 10; i++) await new Promise(r => setTimeout(r, 0));
-console.log(JSON.stringify(written));
-""")
-
-
-EXCEL_HTML = "<table>" + "<tr><td>1</td><td>2</td></tr>" * 2000 + "</table>"  # well over 16 KB
-
-
-def test_a_chunked_rich_copy_reaches_the_local_clipboard(tmp_path):
-    payload = json.dumps({"text/html": EXCEL_HTML, "text/plain": "1\t2\r\n"})
-    assert finish_chunked(patched(tmp_path), FLAVOURS, payload) == [["markup", EXCEL_HTML, "1\t2\r\n"]]
-
-
-def test_original_client_lost_a_chunked_rich_copy(tmp_path):
-    """The bug patch 10 fixes: the bundle went down the image path and failed."""
-    got = finish_chunked(BUNDLE, FLAVOURS, json.dumps({"text/html": EXCEL_HTML, "text/plain": "1"}))
-    assert got and got[0][0] == "failed"
-
-
-def test_chunked_plain_text_is_unchanged(tmp_path):
-    """Plain text arrives as a string from the decoder; the patch leaves that path alone."""
-    code = patched(tmp_path)
-    got = run_script(code, """
-const written = [];
-globalThis.Qe = "application/x-selkies-clipboard-flavours";
-globalThis._n = { shouldSend: () => true, resolveServer() {} };
-vn.write = fn => Promise.resolve().then(fn);
-globalThis.ut = x => x; globalThis.W = true; globalThis.Dn = () => false;
-window.postMessage = () => {}; window.location = { origin: "x" };
-navigator.clipboard = { writeText: async x => written.push(x) };
-globalThis.yn = { inProgress: true, mimeType: "text/plain", receivedSize: 3, totalSize: 3,
-    finish: async () => ({ result: "abc", hash: 1, byteLength: 3 }) };
-onClipboardFinish({ data: "clipboard_finish" });
-for (let i = 0; i < 10; i++) await new Promise(r => setTimeout(r, 0));
-console.log(JSON.stringify(written));
-""")
-    assert got == ["abc"]
