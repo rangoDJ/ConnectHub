@@ -88,6 +88,9 @@ FRONTEND_DIR = Path(os.environ.get("FRONTEND_DIR", "/app/frontend"))
 
 PASSWORD_MASK = "••••••••"
 SINGLE_LINE = r"^[^\r\n]*$"
+# Windows display scaling a profile may ask for; shared so the profile field and the
+# live scaling control can't drift apart
+SCALE_PATTERN = r"^(auto|100|125|150|175|200|225|250|300)$"
 
 # Profile fields that hold secrets: masked when listed, kept when the mask is sent back
 SECRET_FIELDS = ("password", "ssh_key")
@@ -107,7 +110,7 @@ class ConnectionProfile(BaseModel):
     domain: Optional[str] = Field(default="", max_length=256, pattern=SINGLE_LINE)
     resolution: str = Field(default="dynamic", pattern=r"^(dynamic|\d{3,5}x\d{3,5})$")
     # Windows display scaling: "auto" follows the browser's devicePixelRatio, or a fixed percentage
-    scale: str = Field(default="auto", pattern=r"^(auto|100|125|150|175|200|225|250|300)$")
+    scale: str = Field(default="auto", pattern=SCALE_PATTERN)
     enable_audio: bool = True
     enable_clipboard: bool = True
     enable_drive: bool = True
@@ -126,6 +129,11 @@ class ConnectRequest(BaseModel):
 
 class KeyActionRequest(BaseModel):
     key: str # "ctrl_alt_del", "super", "alt_tab"
+
+class ScaleRequest(BaseModel):
+    scale: str = Field(pattern=SCALE_PATTERN)
+    # Used when scale is "auto", exactly as on connect
+    device_pixel_ratio: Optional[float] = Field(default=None, ge=0.5, le=5)
 
 class ClipboardRequest(BaseModel):
     text: str = Field(max_length=1_000_000)
@@ -490,6 +498,16 @@ def session_send_keys(req: KeyActionRequest, user: dict = Depends(get_current_us
     result = session_manager.send_keys(req.key)
     if not result["success"]:
         raise HTTPException(status_code=400, detail=result["message"])
+    return result
+
+@app.post("/api/session/scale")
+def session_scale(req: ScaleRequest, user: dict = Depends(get_current_user)):
+    """Change Windows display scaling on the running session, relaunching its RDP client."""
+    desktop_scale = resolve_desktop_scale(req.scale, req.device_pixel_ratio)
+    result = session_manager.rescale(desktop_scale)
+    if not result["success"]:
+        raise HTTPException(status_code=400, detail=result["message"])
+    logger.info("User %s set display scaling to %s%%", user.get("username"), desktop_scale)
     return result
 
 @app.post("/api/session/clipboard")

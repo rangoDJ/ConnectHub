@@ -230,3 +230,80 @@ def test_host_case_and_the_default_port_count_as_the_same_target(api):
     res = client.post("/api/session/connect", json={"custom": masked(profile_id, host="10.0.0.5", port=3389)})
     assert res.status_code == 200
     assert main.same_target({"host": "PC.local"}, {"host": "pc.local", "port": 3389})
+
+
+# ----------------- Live display scaling endpoint -----------------
+
+@pytest.fixture
+def scale_client(monkeypatch):
+    """A client whose session manager records what rescale() was asked for."""
+    from fastapi.testclient import TestClient
+    import auth
+    monkeypatch.setattr(main, "AUTH_MODE", "none")
+    monkeypatch.setattr(auth, "AUTH_MODE", "none")
+
+    calls = []
+
+    class StubManager:
+        reply = {"success": True, "message": "ok", "rescaled": True}
+        def rescale(self, desktop_scale):
+            calls.append(desktop_scale)
+            return self.reply
+
+    stub = StubManager()
+    monkeypatch.setattr(main, "session_manager", stub)
+    return TestClient(main.app), calls, stub
+
+
+@pytest.mark.parametrize("scale, expected", [
+    ("100", 100),
+    ("150", 150),
+    ("300", 300),
+])
+def test_scale_endpoint_passes_an_explicit_percentage(scale_client, scale, expected):
+    client, calls, _ = scale_client
+    assert client.post("/api/session/scale", json={"scale": scale}).status_code == 200
+    assert calls == [expected]
+
+
+def test_scale_endpoint_resolves_auto_from_the_browser_ratio(scale_client):
+    """Same rule as on connect, so the live control and the profile agree."""
+    client, calls, _ = scale_client
+    res = client.post("/api/session/scale", json={"scale": "auto", "device_pixel_ratio": 2.0})
+    assert res.status_code == 200
+    assert calls == [200]
+
+
+def test_scale_endpoint_auto_without_a_ratio_is_100(scale_client):
+    client, calls, _ = scale_client
+    assert client.post("/api/session/scale", json={"scale": "auto"}).status_code == 200
+    assert calls == [100]
+
+
+@pytest.mark.parametrize("bad", ["137", "0", "-100", "500", "auto%", "", "abc", "1e2"])
+def test_scale_endpoint_rejects_values_outside_the_list(scale_client, bad):
+    client, calls, _ = scale_client
+    assert client.post("/api/session/scale", json={"scale": bad}).status_code == 422
+    assert calls == []
+
+
+def test_scale_endpoint_rejects_an_out_of_range_ratio(scale_client):
+    client, calls, _ = scale_client
+    assert client.post("/api/session/scale",
+                       json={"scale": "auto", "device_pixel_ratio": 99}).status_code == 422
+    assert calls == []
+
+
+def test_scale_endpoint_surfaces_a_refusal_as_400(scale_client):
+    """A non-RDP or dead session must not read as success."""
+    client, _, stub = scale_client
+    stub.reply = {"success": False, "message": "Display scaling only applies to RDP sessions"}
+    res = client.post("/api/session/scale", json={"scale": "150"})
+    assert res.status_code == 400
+    assert "RDP" in res.json()["detail"]
+
+
+def test_scale_endpoint_requires_a_scale(scale_client):
+    client, calls, _ = scale_client
+    assert client.post("/api/session/scale", json={}).status_code == 422
+    assert calls == []
