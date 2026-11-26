@@ -5,6 +5,8 @@ let currentStatus = "disconnected";
 let connectInFlight = false;
 // Bumped on every connect, so a poll that was already in flight when it began is discarded
 let connectGeneration = 0;
+// Windows scale the running session reports, so the toolbar control tracks it
+let lastSeenScale = null;
 let isStreamView = false;
 let statusPollTimer = null;
 let savedProfiles = [];
@@ -86,6 +88,7 @@ const tbBtnSuper = document.getElementById("tb-btn-super");
 const tbBtnAltTab = document.getElementById("tb-btn-alt-tab");
 const tbBtnFiles = document.getElementById("tb-btn-files");
 const tbBtnClipboard = document.getElementById("tb-btn-clipboard");
+const tbScale = document.getElementById("tb-scale");
 const tbBtnFullscreen = document.getElementById("tb-btn-fullscreen");
 const tbBtnCollapse = document.getElementById("tb-btn-collapse");
 const toolbarExpand = document.getElementById("toolbar-expand");
@@ -185,6 +188,7 @@ function setupEventListeners() {
         loadFiles();
     });
     tbBtnClipboard.addEventListener("click", () => openDrawer(clipboardDrawer));
+    tbScale.addEventListener("change", handleScaleChange);
     tbBtnFullscreen.addEventListener("click", toggleFullscreen);
     tbBtnCollapse.addEventListener("click", () => setToolbarCollapsed(true));
     toolbarExpand.addEventListener("click", () => setToolbarCollapsed(false));
@@ -389,6 +393,51 @@ async function sendSpecialKey(key) {
     }
 }
 
+// Windows DPI is a FreeRDP launch argument, so the server relaunches the client against the
+// same host. The Selkies stream stays connected, so only the remote desktop blinks.
+async function handleScaleChange() {
+    const previous = lastSeenScale != null ? String(lastSeenScale) : "auto";
+    const scale = tbScale.value;
+    tbScale.disabled = true;
+    // Same guard handleConnect uses: the re-dial reports "disconnected" for a moment, and an
+    // unguarded poll would read that as a dead session and drop us back to the dashboard
+    connectInFlight = true;
+    connectGeneration++;
+    currentStatus = "connecting";
+    try {
+        const res = await apiFetch("/api/session/scale", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ scale, device_pixel_ratio: window.devicePixelRatio || 1 })
+        });
+        if (!res.ok) {
+            tbScale.value = previous; // the session is still on its old scale
+            showAlert(await errorMessage(res, "Could not change display scaling"), "error");
+        }
+    } catch (e) {
+        tbScale.value = previous;
+        showAlert("Network error changing display scaling", "error");
+    } finally {
+        tbScale.disabled = false;
+        connectInFlight = false;
+    }
+}
+
+// Show the scale the session is really on. "auto" resolves to a percentage on the server,
+// so picking it leaves the control showing that percentage rather than "Auto".
+function syncScaleControl(desktopScale, protocol) {
+    const isRdp = protocol === "rdp";
+    document.querySelectorAll("[data-rdp-only]").forEach(el => {
+        el.classList.toggle("hidden", !isRdp);
+    });
+    if (!isRdp || desktopScale == null || desktopScale === lastSeenScale) return;
+    lastSeenScale = desktopScale;
+    // A resolved "auto" can land on a percentage the list does not offer (e.g. 275)
+    if ([...tbScale.options].some(o => o.value === String(desktopScale))) {
+        tbScale.value = String(desktopScale);
+    }
+}
+
 // ----------------- Status Polling -----------------
 
 function startStatusPolling() {
@@ -413,6 +462,7 @@ async function pollStatus() {
         document.querySelectorAll("[data-keys-group]").forEach(el => {
             el.classList.toggle("hidden", data.protocol === "ssh");
         });
+        syncScaleControl(data.desktop_scale, data.protocol);
 
         // Show/hide view toggle button based on whether connected
         if (data.status === "connected" || data.status === "connecting") {

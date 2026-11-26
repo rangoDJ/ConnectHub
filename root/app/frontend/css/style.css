@@ -690,6 +690,35 @@ body.in-stream.nav-collapsed .nav-expand:focus-visible {
     background: rgba(255, 255, 255, 0.16);
 }
 
+/* Display scaling picker in the floating toolbar */
+.toolbar-label {
+    font-size: 0.75rem;
+    color: var(--text-main);
+    white-space: nowrap;
+}
+
+.toolbar-select {
+    background: var(--bg-input);
+    color: var(--text-main);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 0.2rem 0.35rem;
+    font-size: 0.78rem;
+    font-family: inherit;
+    cursor: pointer;
+    /* The toolbar is a flex row and would otherwise shrink this to its arrow alone,
+       hiding the value. Wide enough for "300%" plus the dropdown arrow. */
+    flex: 0 0 auto;
+    min-width: 68px;
+}
+.toolbar-select:hover {
+    border-color: var(--border-focus);
+}
+.toolbar-select:disabled {
+    cursor: progress;
+    opacity: 0.6;
+}
+
 /* Drawers */
 .drawer {
     position: fixed;

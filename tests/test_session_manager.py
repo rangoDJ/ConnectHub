@@ -19,6 +19,7 @@ def mgr(monkeypatch):
     manager.lock = sm.threading.Lock()
     manager._user_disconnected = set()
     manager._pending_connect = None
+    manager._last_config = None
     manager.rdp_binary = "xfreerdp"
     manager.supports_args_from = True
     return manager
@@ -502,3 +503,125 @@ def test_clipboard_send_with_a_session_goes_to_xclip(mgr, monkeypatch):
     monkeypatch.setattr(sm.subprocess, "run", lambda cmd, **k: calls.append((cmd, k["input"])))
     assert mgr.set_clipboard("héllo")["success"] is True
     assert calls == [(["xclip", "-selection", "clipboard", "-i"], "héllo".encode("utf-8"))]
+
+
+# ----------------- Live display scaling -----------------
+
+class LiveProc:
+    """A client process that is still running."""
+    pid = 7777
+    def poll(self):
+        return None
+    def terminate(self):
+        pass
+    def wait(self, timeout=None):
+        return 0
+
+
+def test_rescale_refuses_a_non_rdp_session(mgr):
+    """/scale-desktop is a FreeRDP argument; VNC and SSH have no equivalent."""
+    mgr.protocol = "vnc"
+    mgr.process = LiveProc()
+    mgr._last_config = {"host": "h", "port": 5900, "protocol": "vnc"}
+    result = mgr.rescale(150)
+    assert not result["success"]
+    assert "RDP" in result["message"]
+
+
+def test_rescale_refuses_when_nothing_is_running(mgr):
+    mgr.protocol = "rdp"
+    mgr.process = None
+    assert not mgr.rescale(150)["success"]
+
+
+def test_rescale_refuses_when_the_config_is_gone(mgr):
+    """Without the session's own config there is no host to re-dial."""
+    mgr.protocol = "rdp"
+    mgr.process = LiveProc()
+    mgr._last_config = None
+    assert not mgr.rescale(150)["success"]
+
+
+def test_rescale_relaunches_with_the_new_scale(mgr, monkeypatch):
+    mgr.protocol = "rdp"
+    mgr.process = LiveProc()
+    mgr._last_config = {"host": "10.0.0.5", "port": 3389, "protocol": "rdp", "desktop_scale": 100}
+
+    disconnected = []
+    reconnected = []
+    monkeypatch.setattr(mgr, "disconnect", lambda: disconnected.append(True) or {"success": True})
+    monkeypatch.setattr(mgr, "connect", lambda cfg: reconnected.append(cfg) or {"success": True})
+
+    result = mgr.rescale(150)
+    assert result["success"] and result["rescaled"]
+    assert disconnected, "the old client must be stopped before relaunching"
+    assert reconnected[0]["desktop_scale"] == 150
+    assert reconnected[0]["host"] == "10.0.0.5", "must re-dial the same host"
+
+
+def test_rescale_keeps_the_rest_of_the_session_config(mgr, monkeypatch):
+    """Only the scale changes: credentials and options carry over to the new client."""
+    mgr.protocol = "rdp"
+    mgr.process = LiveProc()
+    mgr._last_config = {"host": "h", "port": 3389, "protocol": "rdp", "desktop_scale": 100,
+                        "username": "admin", "password": "hunter2", "enable_drive": False}
+    captured = []
+    monkeypatch.setattr(mgr, "disconnect", lambda: {"success": True})
+    monkeypatch.setattr(mgr, "connect", lambda cfg: captured.append(cfg) or {"success": True})
+
+    mgr.rescale(200)
+    assert captured[0]["password"] == "hunter2"
+    assert captured[0]["username"] == "admin"
+    assert captured[0]["enable_drive"] is False
+
+
+def test_rescale_at_the_same_scale_does_not_relaunch(mgr, monkeypatch):
+    """No pointless blink when the picked value is the one already in force."""
+    mgr.protocol = "rdp"
+    mgr.process = LiveProc()
+    mgr._last_config = {"host": "h", "port": 3389, "protocol": "rdp", "desktop_scale": 150}
+    monkeypatch.setattr(mgr, "disconnect", lambda: pytest.fail("must not disconnect"))
+    monkeypatch.setattr(mgr, "connect", lambda cfg: pytest.fail("must not reconnect"))
+
+    result = mgr.rescale(150)
+    assert result["success"] and result["rescaled"] is False
+
+
+def test_rescale_does_not_mutate_the_stored_config_on_failure(mgr, monkeypatch):
+    """A refused relaunch leaves the session's recorded scale alone."""
+    mgr.protocol = "rdp"
+    mgr.process = LiveProc()
+    mgr._last_config = {"host": "h", "port": 3389, "protocol": "rdp", "desktop_scale": 100}
+    monkeypatch.setattr(mgr, "disconnect", lambda: {"success": True})
+    monkeypatch.setattr(mgr, "connect", lambda cfg: {"success": False, "message": "no client"})
+
+    assert not mgr.rescale(150)["success"]
+    assert mgr._last_config["desktop_scale"] == 100
+
+
+def test_status_reports_the_sessions_scale(mgr):
+    mgr.protocol = "rdp"
+    mgr._last_config = {"host": "h", "desktop_scale": 175}
+    assert mgr.get_status()["desktop_scale"] == 175
+
+
+def test_status_scale_defaults_to_100_for_rdp(mgr):
+    mgr.protocol = "rdp"
+    mgr._last_config = {"host": "h"}
+    assert mgr.get_status()["desktop_scale"] == 100
+
+
+def test_status_has_no_scale_for_non_rdp(mgr):
+    """The toolbar hides the control unless the session is RDP."""
+    mgr.protocol = "ssh"
+    mgr._last_config = {"host": "h", "desktop_scale": 150}
+    assert mgr.get_status()["desktop_scale"] is None
+
+
+def test_connect_remembers_the_config_for_rescaling(mgr, monkeypatch):
+    monkeypatch.setattr(mgr, "_wait_for_display_to_settle", lambda: None)
+    monkeypatch.setattr(sm.subprocess, "Popen", lambda *a, **k: LiveProc())
+    monkeypatch.setattr(sm.threading, "Thread", lambda *a, **k: type("T", (), {"start": lambda s: None})())
+
+    assert mgr.connect({"protocol": "vnc", "host": "10.0.0.7"})["success"]
+    assert mgr._last_config["host"] == "10.0.0.7"

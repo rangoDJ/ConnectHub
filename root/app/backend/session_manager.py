@@ -118,6 +118,9 @@ class SessionManager:
         self._user_disconnected: set = set()
         # Token of a connect() waiting for the display to settle; cleared to cancel it
         self._pending_connect: Optional[object] = None
+        # The running session's own config, so rescale() can re-dial the same host without
+        # the dashboard resending it. Holds the password, and is dropped when the session ends.
+        self._last_config: Optional[Dict[str, Any]] = None
         self.rdp_binary = "xfreerdp"
         self.supports_args_from = False
         self._find_xfreerdp_binary()
@@ -420,6 +423,7 @@ class SessionManager:
             self.protocol = None
             self.current_target = None
             self.start_time = None
+            self._last_config = None  # don't keep the password past the session
 
     def _display_size(self) -> Optional[Tuple[int, int]]:
         try:
@@ -525,6 +529,7 @@ class SessionManager:
                 return {"success": False, "message": str(e)}
 
             self.process = proc
+            self._last_config = config
             threading.Thread(target=self._monitor_process, args=(proc, launch, protocol), daemon=True).start()
             threading.Thread(target=self._watch_connected, args=(proc, launch), daemon=True).start()
             idle_limit = idle_disconnect_seconds()
@@ -583,15 +588,45 @@ class SessionManager:
             proc.wait()
         return {"success": True, "message": "Disconnected successfully"}
 
+    def rescale(self, desktop_scale: int) -> Dict[str, Any]:
+        """Re-dial the running RDP session with a different Windows display scale.
+
+        /scale-desktop is a FreeRDP launch argument, so there is no way to change it on
+        a running client; the client is relaunched against the same host instead. The
+        Selkies stream stays connected throughout, so only the remote desktop blinks.
+        """
+        with self.lock:
+            if self.protocol != "rdp":
+                return {"success": False, "message": "Display scaling only applies to RDP sessions"}
+            if not self.process or self.process.poll() is not None:
+                return {"success": False, "message": "No active session to rescale"}
+            config = dict(self._last_config or {})
+
+        if not config.get("host"):
+            return {"success": False, "message": "The running session's settings are no longer available"}
+        if int(config.get("desktop_scale") or 100) == desktop_scale:
+            return {"success": True, "message": f"Display scaling is already {desktop_scale}%", "rescaled": False}
+
+        config["desktop_scale"] = desktop_scale
+        logger.info("Rescaling session to %s%%; relaunching the RDP client", desktop_scale)
+        self.disconnect()
+        result = self.connect(config)
+        result["rescaled"] = result.get("success", False)
+        return result
+
     def get_status(self) -> Dict[str, Any]:
         with self.lock:
             uptime = int(time.time() - self.start_time) if (self.start_time and self.status == "connected") else 0
+            config = self._last_config or {}
+            # So the stream toolbar's scaling control can show what the session is really on
+            scale = int(config.get("desktop_scale") or 100) if self.protocol == "rdp" else None
             return {
                 "status": self.status,
                 "protocol": self.protocol,
                 "target": self.current_target,
                 "uptime_seconds": uptime,
                 "last_error": self.last_error,
+                "desktop_scale": scale,
             }
 
     def send_keys(self, key_combination: str) -> Dict[str, Any]:

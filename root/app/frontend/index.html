@@ -257,6 +257,25 @@
                     </button>
                 </div>
 
+                <div class="toolbar-separator" data-rdp-only></div>
+
+                <!-- Windows DPI, which is a FreeRDP launch argument, so changing it re-dials -->
+                <div class="toolbar-group" data-rdp-only>
+                    <label for="tb-scale" class="toolbar-label">Scale</label>
+                    <select id="tb-scale" class="toolbar-select"
+                            title="Windows display scaling. Changing this reconnects the session.">
+                        <option value="auto">Auto</option>
+                        <option value="100">100%</option>
+                        <option value="125">125%</option>
+                        <option value="150">150%</option>
+                        <option value="175">175%</option>
+                        <option value="200">200%</option>
+                        <option value="225">225%</option>
+                        <option value="250">250%</option>
+                        <option value="300">300%</option>
+                    </select>
+                </div>
+
                 <div class="toolbar-separator"></div>
 
                 <div class="toolbar-group">
